@@ -29,7 +29,9 @@ camera staying put.
 
 ## Building
 
-Requires Android Studio (Ladybug or newer) and a JDK 17+ toolchain.
+Requires Android Studio (Ladybug or newer). Its bundled JDK is sufficient — the
+build targets Java 17 bytecode without pinning a toolchain, so any JDK 17 or
+newer works and Gradle never needs to download one.
 
 ```bash
 ./gradlew :core:test          # protocol unit tests, no Android SDK needed
