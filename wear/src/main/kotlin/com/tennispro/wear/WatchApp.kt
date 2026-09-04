@@ -186,21 +186,25 @@ private fun ScoreFace(projection: MatchProjection) {
         )
     }
 
-    Spacer(Modifier.height(6.dp))
+    // A tiebreak-only match has no games or sets — the point score above is
+    // the whole match, so there is nothing to add here.
+    if (!projection.config.tiebreakOnlyMatch) {
+        Spacer(Modifier.height(6.dp))
 
-    Text(
-        text = "Games ${projection.currentSetGamesA}-${projection.currentSetGamesB}",
-        fontSize = 14.sp,
-        textAlign = TextAlign.Center,
-    )
-
-    if (projection.completedSets.isNotEmpty()) {
         Text(
-            text = projection.completedSets.joinToString(" ") { "${it.gamesA}-${it.gamesB}" },
-            fontSize = 11.sp,
-            color = MaterialTheme.colors.onSurfaceVariant,
+            text = "Games ${projection.currentSetGamesA}-${projection.currentSetGamesB}",
+            fontSize = 14.sp,
             textAlign = TextAlign.Center,
         )
+
+        if (projection.completedSets.isNotEmpty()) {
+            Text(
+                text = projection.completedSets.joinToString(" ") { "${it.gamesA}-${it.gamesB}" },
+                fontSize = 11.sp,
+                color = MaterialTheme.colors.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 
     Spacer(Modifier.height(8.dp))

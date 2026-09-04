@@ -4,9 +4,8 @@ Turns a phone camera and a Galaxy Watch into a tennis match assistant: records t
 match, scores it from your wrist, and — in later phases — estimates serve speed
 and calls the service line.
 
-**Phase 0 is complete and proven on court.** **Phase 1 (manual scoring) is code**
-**complete but not yet verified on hardware** — see [Verifying Phase 1](#verifying-phase-1)
-below before trusting it in a real match. No computer vision yet.
+**Phases 0 and 1 are complete and verified on real hardware** (a Galaxy S25 Ultra
+and a Galaxy Watch8 Classic). No computer vision yet.
 
 Before trusting anything this app eventually says about speed or line calls, read
 [docs/ACCURACY.md](docs/ACCURACY.md). Short version: serve speed lands within about
@@ -72,33 +71,39 @@ rather than the activity is what makes a two-hour match on a fence possible.
 ## Verifying Phase 1
 
 Manual scoring builds and its rules are covered by `:core:test` (deuce/advantage,
-tiebreaks, best-of-N, undo across game/set boundaries), but none of that proves the
-watch link actually works. Check it for real:
+tiebreaks, best-of-N, undo across game/set boundaries), but that alone doesn't prove
+the watch link works. Confirmed on a Galaxy S25 Ultra + Galaxy Watch8 Classic:
 
 1. Launch the app on both devices, open **Score match** on the phone, and start a
    best-of-3 match.
 2. On the watch: single tap scores a point for you, double tap for your opponent,
-   long-press undoes the last point. Confirm each buzzes distinctly — a point should
-   feel like a faint tick, a game win two firmer pulses, a set win three, and a
-   match win the biggest pattern in the app. Judge these on court; the exact
-   waveforms in `wear/Haptics.kt` are a first cut, not a measurement.
-3. Force a deuce, a tiebreak (score to 6-6), and a set win, checking the phone and
-   watch always show the same score.
-4. Kill and reopen the watch app mid-match — the score should reappear from the
-   latched `DataClient` state without the phone doing anything, which is the point
-   of not using a fire-and-forget message for this.
-5. Force-stop the phone app mid-match and relaunch it — the score should be
-   restored from disk (`ScoreStorage`), not reset to 0-0.
-6. Try scoring and recording at the same time. Read the "Known gap" note on
+   long-press undoes the last point. Each buzzes distinctly — a point is a faint
+   tick, a game win two firmer pulses, a set win three, and a match win the biggest
+   pattern in the app. Judge these on court for your own taste; the exact waveforms
+   in `wear/Haptics.kt` are a first cut, not a measurement.
+3. Force a deuce and reach 40-40/AD — confirmed correct on the phone and watch.
+4. Back the watch out to its home screen mid-match, score more points on the phone,
+   then reopen the watch app — the score is current immediately, no re-sync needed.
+   That's the latched `DataClient` state doing its job, not a fire-and-forget message.
+5. Try scoring and recording at the same time. Read the "Known gap" note on
    `MatchController` first — right now a watch long-press does *both* undo a point
    and mark a video bookmark, which is expected for Phase 1, not a bug.
+
+Two real bugs turned up only once this ran on physical hardware, both now fixed:
+neither `WearableListenerService` should declare
+`android:permission="com.google.android.gms.permission.BIND_WEARABLE_LISTENER"` —
+on this hardware it made Play Services itself fail to bind, silently dropping every
+message in both directions with no error anywhere except `adb logcat`'s
+`ActivityManager`/`WearableService` lines; and the New Match dialog's three format
+buttons needed `Modifier.weight(1f)` to share width, since without it they could
+overflow the dialog on this phone's landscape lock.
 
 ## Where this is going
 
 | Phase | Scope | State |
 | --- | --- | --- |
 | 0 | Scaffolding, recording, phone↔watch link | **Done**, proven on court |
-| 1 | Manual scoring from the watch, persisted match state | **Code complete**, unverified on hardware |
+| 1 | Manual scoring from the watch, persisted match state | **Done**, proven on hardware |
 | 2 | Court calibration UI + video replay harness | Planned |
 | 3 | Serve speed | Planned |
 | 4 | Service line in/out calls | Planned |

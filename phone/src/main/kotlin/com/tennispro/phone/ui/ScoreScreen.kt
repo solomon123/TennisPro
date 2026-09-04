@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -148,21 +150,25 @@ private fun ScoreBoard(p: MatchProjection, modifier: Modifier = Modifier) {
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(Modifier.height(8.dp))
 
-        if (p.completedSets.isNotEmpty()) {
+        // A tiebreak-only match has no games or sets to report — the big point
+        // score below is the whole match.
+        if (!p.config.tiebreakOnlyMatch) {
+            if (p.completedSets.isNotEmpty()) {
+                Text(
+                    p.completedSets.joinToString("   ") { "${it.gamesA}-${it.gamesB}" },
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
             Text(
-                p.completedSets.joinToString("   ") { "${it.gamesA}-${it.gamesB}" },
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                "Games ${p.currentSetGamesA}–${p.currentSetGamesB}",
+                style = MaterialTheme.typography.titleLarge,
             )
-            Spacer(Modifier.height(8.dp))
+
+            Spacer(Modifier.height(12.dp))
         }
-
-        Text(
-            "Games ${p.currentSetGamesA}–${p.currentSetGamesB}",
-            style = MaterialTheme.typography.titleLarge,
-        )
-
-        Spacer(Modifier.height(12.dp))
 
         val (pointsA, pointsB) = ScoreFormat.pointLabels(p)
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -206,6 +212,8 @@ private fun NewMatchDialog(
     onDismiss: () -> Unit,
 ) {
     var setsToWin by remember { mutableStateOf(2) } // best of 3
+    var tiebreakOnly by remember { mutableStateOf(false) }
+    var tiebreakPointsToWin by remember { mutableStateOf(7) }
     var noAd by remember { mutableStateOf(false) }
     var finalSetTiebreak by remember { mutableStateOf(true) }
 
@@ -213,19 +221,59 @@ private fun NewMatchDialog(
         onDismissRequest = onDismiss,
         title = { Text("Start a new match") },
         text = {
-            Column {
+            // Scrollable and the format buttons share width via weight(1f): on a
+            // landscape phone (this app is locked to landscape) the dialog's
+            // available width/height is much tighter than portrait, and without
+            // both of these the format buttons and the toggles below can overflow
+            // the dialog bounds.
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("Format", style = MaterialTheme.typography.labelLarge)
                 Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FormatOption("Best of 1", selected = setsToWin == 1) { setsToWin = 1 }
-                    FormatOption("Best of 3", selected = setsToWin == 2) { setsToWin = 2 }
-                    FormatOption("Best of 5", selected = setsToWin == 3) { setsToWin = 3 }
+                // A 2x2 grid rather than one 4-wide row: each button gets roughly
+                // half the dialog's width, which is comfortably enough for "Best of 5"
+                // to stay on one line even on a narrow landscape screen.
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FormatOption("Best of 1", selected = !tiebreakOnly && setsToWin == 1, modifier = Modifier.weight(1f)) {
+                        tiebreakOnly = false; setsToWin = 1
+                    }
+                    FormatOption("Best of 3", selected = !tiebreakOnly && setsToWin == 2, modifier = Modifier.weight(1f)) {
+                        tiebreakOnly = false; setsToWin = 2
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FormatOption("Best of 5", selected = !tiebreakOnly && setsToWin == 3, modifier = Modifier.weight(1f)) {
+                        tiebreakOnly = false; setsToWin = 3
+                    }
+                    FormatOption("Tiebreak", selected = tiebreakOnly, modifier = Modifier.weight(1f)) {
+                        tiebreakOnly = true
+                    }
                 }
 
                 Spacer(Modifier.height(16.dp))
 
-                ToggleRow("No-ad scoring", noAd) { noAd = it }
-                ToggleRow("Tiebreak in final set", finalSetTiebreak) { finalSetTiebreak = it }
+                // No-ad and final-set-tiebreak are meaningless once the whole match
+                // is a single tiebreak, so they'd be dead controls — hide them
+                // rather than leave something on screen that silently does nothing.
+                if (!tiebreakOnly) {
+                    ToggleRow("No-ad scoring", noAd) { noAd = it }
+                    ToggleRow("Tiebreak in final set", finalSetTiebreak) { finalSetTiebreak = it }
+                } else {
+                    Text(
+                        "A single tiebreak (win by 2). No games, no sets.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FormatOption("First to 7", selected = tiebreakPointsToWin == 7, modifier = Modifier.weight(1f)) {
+                            tiebreakPointsToWin = 7
+                        }
+                        FormatOption("First to 10", selected = tiebreakPointsToWin == 10, modifier = Modifier.weight(1f)) {
+                            tiebreakPointsToWin = 10
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
@@ -235,6 +283,8 @@ private fun NewMatchDialog(
                         setsToWin = setsToWin,
                         noAd = noAd,
                         finalSetTiebreak = finalSetTiebreak,
+                        tiebreakOnlyMatch = tiebreakOnly,
+                        tiebreakPointsToWin = if (tiebreakOnly) tiebreakPointsToWin else 7,
                     ),
                 )
             }) { Text("Start") }
@@ -246,11 +296,11 @@ private fun NewMatchDialog(
 }
 
 @Composable
-private fun FormatOption(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun FormatOption(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     if (selected) {
-        Button(onClick = onClick, colors = ButtonDefaults.buttonColors()) { Text(label) }
+        Button(onClick = onClick, modifier = modifier, colors = ButtonDefaults.buttonColors()) { Text(label) }
     } else {
-        OutlinedButton(onClick = onClick) { Text(label) }
+        OutlinedButton(onClick = onClick, modifier = modifier) { Text(label) }
     }
 }
 

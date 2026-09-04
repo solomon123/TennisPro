@@ -22,6 +22,13 @@ data class MatchConfig(
     val noAd: Boolean = false,
     /** If false, the deciding set is played out to a 2-game lead with no tiebreak. */
     val finalSetTiebreak: Boolean = true,
+    /**
+     * The match *is* a single tiebreak — no games, no sets. A quick decider or a
+     * practice-session format. When true, [setsToWin], [gamesToWinSet], [noAd] and
+     * [finalSetTiebreak] are all ignored: the match starts already in a tiebreak
+     * and ends the instant that tiebreak is won.
+     */
+    val tiebreakOnlyMatch: Boolean = false,
 )
 
 @Serializable
@@ -97,7 +104,7 @@ private class WorkingMatch(private val config: MatchConfig) {
     var gamesA = 0
     var gamesB = 0
     var gamePoints = PointCount()
-    var inTiebreak = false
+    var inTiebreak = config.tiebreakOnlyMatch
     var tiebreakPoints = PointCount()
     var server = Side.A
     var winner: Side? = null
@@ -165,6 +172,14 @@ private class WorkingMatch(private val config: MatchConfig) {
             else -> null
         } ?: return
 
+        if (config.tiebreakOnlyMatch) {
+            // The breaker IS the match: declare the winner directly, with no games
+            // or sets to update. Leaving inTiebreak/tiebreakPoints as they are means
+            // the final score (e.g. 7-5) stays on screen rather than resetting to 0-0.
+            winner = tbWinner
+            return
+        }
+
         if (tbWinner == Side.A) gamesA++ else gamesB++
         inTiebreak = false
         val finishedTiebreak = tiebreakPoints
@@ -225,6 +240,9 @@ object ScoreFormat {
     /** One-line summary for a haptic alert's detail text. */
     fun summary(p: MatchProjection): String {
         val (pa, pb) = pointLabels(p)
+        // A tiebreak-only match has no games/sets to report — the tiebreak score
+        // (already what pointLabels returns while inTiebreak) is the whole story.
+        if (p.config.tiebreakOnlyMatch) return "$pa-$pb"
         return "${setsSummary(p)} ($pa-$pb)"
     }
 }

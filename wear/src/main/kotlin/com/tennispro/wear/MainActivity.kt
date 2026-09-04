@@ -1,6 +1,7 @@
 package com.tennispro.wear
 
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.remember
@@ -10,6 +11,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Mid-match the watch is glanced at constantly but rarely touched, and this
+        // app does not implement ambient mode — without this the screen times out
+        // and drops to the watch face, same reasoning as the phone's MainActivity.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         setContent {
             val link = remember { WatchLink(this) }

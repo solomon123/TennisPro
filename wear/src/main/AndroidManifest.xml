@@ -41,11 +41,16 @@
           Receives phone messages when the watch app is not in the foreground, which
           is the normal case: the point of an out-call buzz is that you are playing,
           not looking at your wrist.
+
+          Deliberately no android:permission="...BIND_WEARABLE_LISTENER" here — see
+          the matching note on the phone's PhoneWearableListenerService. On a real
+          device, requiring it can make Play Services itself fail to bind to this
+          service, silently dropping every message. The wear:-scheme intent-filters
+          below already scope delivery correctly.
         -->
         <service
             android:name=".WatchWearableListenerService"
-            android:exported="true"
-            android:permission="com.google.android.gms.permission.BIND_WEARABLE_LISTENER">
+            android:exported="true">
             <intent-filter>
                 <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
                 <data android:scheme="wear" android:host="*" android:pathPrefix="/tennispro" />

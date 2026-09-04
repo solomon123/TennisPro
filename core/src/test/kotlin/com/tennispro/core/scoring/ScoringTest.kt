@@ -213,6 +213,68 @@ class ScoringTest {
     }
 
     @Test
+    fun `tiebreak-only match starts already in a tiebreak`() {
+        val state = MatchState(MatchConfig(tiebreakOnlyMatch = true))
+        val p = state.projection()
+        assertTrue(p.inTiebreak)
+        assertEquals(0, p.tiebreakPoints.a)
+        assertEquals(0, p.tiebreakPoints.b)
+        assertNull(p.winner)
+    }
+
+    @Test
+    fun `tiebreak-only match ends the instant the breaker is won, no games or sets`() {
+        val config = MatchConfig(tiebreakOnlyMatch = true)
+        var state = MatchState(config)
+        state = state.play(*Array(6) { Side.A }) // 6-0
+        assertNull(state.projection().winner)
+
+        state = state.pointWon(Side.A) // 7-0, win by 7 clear
+        val p = state.projection()
+        assertEquals(Side.A, p.winner)
+        assertTrue(p.inTiebreak)
+        assertEquals(7, p.tiebreakPoints.a)
+        assertEquals(0, p.tiebreakPoints.b)
+        assertEquals(0, p.currentSetGamesA)
+        assertEquals(0, p.currentSetGamesB)
+        assertTrue(p.completedSets.isEmpty())
+    }
+
+    @Test
+    fun `tiebreak-only match still requires winning by two`() {
+        var state = MatchState(MatchConfig(tiebreakOnlyMatch = true))
+        state = state.play(*Array(6) { Side.A }) // 6-0
+        state = state.play(*Array(6) { Side.B }) // 6-6
+        assertNull(state.projection().winner)
+
+        state = state.pointWon(Side.A) // 7-6, not yet 2 clear
+        assertNull(state.projection().winner)
+
+        state = state.pointWon(Side.A) // 8-6, decided
+        assertEquals(Side.A, state.projection().winner)
+    }
+
+    @Test
+    fun `undo works through a tiebreak-only match`() {
+        var state = MatchState(MatchConfig(tiebreakOnlyMatch = true))
+        state = state.play(*Array(6) { Side.A }) // 6-0
+        val before = state.projection()
+
+        state = state.pointWon(Side.A) // 7-0, match won
+        assertEquals(Side.A, state.projection().winner)
+
+        state = state.undoLast()
+        assertEquals(before, state.projection())
+    }
+
+    @Test
+    fun `tiebreak-only summary omits the redundant games line`() {
+        var state = MatchState(MatchConfig(tiebreakOnlyMatch = true))
+        state = state.play(Side.A, Side.A, Side.B)
+        assertEquals("2-1", ScoreFormat.summary(state.projection()))
+    }
+
+    @Test
     fun `projection and codec round trip`() {
         var state = MatchState()
         state = winGame(state, Side.A)

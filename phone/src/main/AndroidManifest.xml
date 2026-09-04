@@ -46,11 +46,19 @@
         <!--
           Receives watch messages even when the phone UI is not running, so a score
           tap made while the phone screen is off still lands.
+
+          Deliberately no android:permission="...BIND_WEARABLE_LISTENER" here: on a
+          real device (Play Services build/version dependent) the Wearable Data
+          Layer's own binder does not always hold that permission itself, so
+          requiring it causes Play Services to be denied binding to this very
+          service — every message silently dropped, both directions, with no error
+          visible anywhere except adb logcat's ActivityManager/WearableService
+          lines. The wear:-scheme intent-filter below is what actually scopes
+          delivery to this app; exported=true plus that filter is sufficient.
         -->
         <service
             android:name=".wear.PhoneWearableListenerService"
-            android:exported="true"
-            android:permission="com.google.android.gms.permission.BIND_WEARABLE_LISTENER">
+            android:exported="true">
             <intent-filter>
                 <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
                 <data android:scheme="wear" android:host="*" android:pathPrefix="/tennispro" />
