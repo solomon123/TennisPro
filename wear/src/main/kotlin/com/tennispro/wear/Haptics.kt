@@ -51,6 +51,33 @@ class Haptics(context: Context) {
                 timings = longArrayOf(0, 45),
                 amplitudes = intArrayOf(0, 120),
             )
+
+            // One stronger pulse than a point, so a game win is felt as a step up
+            // rather than mistaken for another ordinary point.
+            AlertKind.GAME_WON -> waveform(
+                timings = longArrayOf(0, 120, 60, 120),
+                amplitudes = intArrayOf(0, 200, 0, 200),
+            )
+
+            // Three pulses, rising amplitude — bigger than a game, still short of
+            // the two-hard-pulse OUT_CALL shape so the two are never confused.
+            AlertKind.SET_WON -> waveform(
+                timings = longArrayOf(0, 100, 70, 100, 70, 140),
+                amplitudes = intArrayOf(0, 180, 0, 210, 0, 255),
+            )
+
+            // The one celebratory pattern in the app: four pulses, ramping to full.
+            AlertKind.MATCH_WON -> waveform(
+                timings = longArrayOf(0, 90, 60, 90, 60, 120, 60, 200),
+                amplitudes = intArrayOf(0, 150, 0, 190, 0, 220, 0, 255),
+            )
+
+            // A single, deliberately un-tick-like buzz — long enough to read as a
+            // correction rather than another point being logged.
+            AlertKind.UNDO -> waveform(
+                timings = longArrayOf(0, 90),
+                amplitudes = intArrayOf(0, 160),
+            )
         }
 
         vibrator.vibrate(effect)

@@ -30,6 +30,9 @@ import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
 import com.tennispro.core.protocol.AlertKind
 import com.tennispro.core.protocol.Gesture
+import com.tennispro.core.scoring.MatchProjection
+import com.tennispro.core.scoring.ScoreFormat
+import com.tennispro.core.scoring.Side
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -46,6 +49,7 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
     val scope = rememberCoroutineScope()
     val status by WatchEventBus.status.collectAsState()
     val lastAlert by WatchEventBus.lastAlert.collectAsState()
+    val matchState by WatchEventBus.matchState.collectAsState()
 
     var flash by remember { mutableStateOf<AlertKind?>(null) }
     var feedback by remember { mutableStateOf<String?>(null) }
@@ -126,6 +130,8 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
                     textAlign = TextAlign.Center,
                 )
 
+                matchState != null -> ScoreFace(matchState!!)
+
                 else -> {
                     Text(
                         text = "TennisPro",
@@ -154,5 +160,62 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
 }
 
 private fun statusIdleText(text: String) = text.ifBlank { "Waiting for phone" }
+
+/**
+ * The face while a match is in progress: current game score big, games and
+ * sets small below it. Gesture handling does not change — the same tap /
+ * double-tap / long-press pointer input above keeps sending [Gesture]s; the
+ * phone is what decides they mean "point" and "undo" while a match is active.
+ */
+@Composable
+private fun ScoreFace(projection: MatchProjection) {
+    val (pointsA, pointsB) = ScoreFormat.pointLabels(projection)
+
+    Text(
+        text = "$pointsA – $pointsB",
+        fontSize = 40.sp,
+        fontWeight = FontWeight.Black,
+        textAlign = TextAlign.Center,
+    )
+    if (projection.inTiebreak) {
+        Text(
+            text = "tiebreak",
+            fontSize = 11.sp,
+            color = MaterialTheme.colors.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
+
+    Spacer(Modifier.height(6.dp))
+
+    Text(
+        text = "Games ${projection.currentSetGamesA}-${projection.currentSetGamesB}",
+        fontSize = 14.sp,
+        textAlign = TextAlign.Center,
+    )
+
+    if (projection.completedSets.isNotEmpty()) {
+        Text(
+            text = projection.completedSets.joinToString(" ") { "${it.gamesA}-${it.gamesB}" },
+            fontSize = 11.sp,
+            color = MaterialTheme.colors.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
+
+    Spacer(Modifier.height(8.dp))
+
+    val winner = projection.winner
+    when {
+        winner == Side.A -> Text("You win!", fontSize = 14.sp, color = Color(0xFF4CAF50), textAlign = TextAlign.Center)
+        winner == Side.B -> Text("Opponent wins", fontSize = 14.sp, textAlign = TextAlign.Center)
+        else -> Text(
+            text = if (projection.server == Side.A) "You serve" else "Opponent serves",
+            fontSize = 11.sp,
+            color = MaterialTheme.colors.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
 
 private val OutRed = Color(0xFFC62828)

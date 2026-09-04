@@ -317,7 +317,7 @@ class RecordingService : LifecycleService() {
         }
 
     private fun currentResolution(): String? =
-        videoCapture?.resolutionInfo?.resolution?.let { "${it.width}x${it.height}" }
+        videoCapture?.attachedSurfaceResolution?.let { "${it.width}x${it.height}" }
 
     private fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED

@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,6 +30,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.tennispro.core.scoring.ScoreFormat
+import com.tennispro.core.scoring.projection
+import com.tennispro.phone.score.MatchController
 import com.tennispro.phone.storage.MatchSession
 import com.tennispro.phone.storage.MatchStorage
 import java.text.SimpleDateFormat
@@ -39,9 +43,12 @@ import java.util.Locale
 fun HomeScreen(
     storage: MatchStorage,
     diagnostics: WatchDiagnostics,
+    matchController: MatchController,
     onRecord: () -> Unit,
     onWatchCheck: () -> Unit,
+    onScore: () -> Unit,
 ) {
+    val activeMatch by matchController.match.collectAsState()
     var sessions by remember { mutableStateOf<List<MatchSession>>(emptyList()) }
     var totalBytes by remember { mutableStateOf(0L) }
     var freeBytes by remember { mutableStateOf(0L) }
@@ -65,7 +72,7 @@ fun HomeScreen(
         Text("TennisPro", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Phase 0 — recording and watch link",
+            "Recording, scoring, and a watch link",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -87,12 +94,22 @@ fun HomeScreen(
                 text = "${formatBytes(totalBytes)} used · ${formatBytes(freeBytes)} free",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            activeMatch?.let { match ->
+                Spacer(Modifier.width(8.dp))
+                Chip(
+                    text = "Scoring: ${ScoreFormat.summary(match.projection())}",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
 
         Spacer(Modifier.height(16.dp))
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(onClick = onRecord) { Text("Record a match") }
+            OutlinedButton(onClick = onScore) {
+                Text(if (activeMatch != null) "Resume score" else "Score match")
+            }
             OutlinedButton(onClick = onWatchCheck) { Text("Watch check") }
             OutlinedButton(
                 onClick = { reloadToken++ },

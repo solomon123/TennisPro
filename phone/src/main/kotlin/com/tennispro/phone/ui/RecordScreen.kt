@@ -57,7 +57,9 @@ fun RecordScreen(
     // Compose requires composable calls to be unconditional, so the fallback flow is
     // remembered up front rather than reached for behind an elvis on collectAsState.
     val fallbackState = remember { MutableStateFlow<CaptureState>(CaptureState.Initialising) }
-    val state by (service?.state ?: fallbackState).collectAsState()
+    // A plain val, not `by`: a delegated property re-invokes its getter on every
+    // read, so the compiler cannot smart-cast it inside the `when` branches below.
+    val state = (service?.state ?: fallbackState).collectAsState().value
     var toast by remember { mutableStateOf<String?>(null) }
 
     // Ticks the elapsed clock without recomposing anything else.

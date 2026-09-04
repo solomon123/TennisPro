@@ -1,11 +1,15 @@
 package com.tennispro.wear
 
 import android.util.Log
+import com.google.android.gms.wearable.DataEvent
+import com.google.android.gms.wearable.DataEventBuffer
+import com.google.android.gms.wearable.DataMapItem
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.WearableListenerService
 import com.tennispro.core.protocol.PhoneToWatch
 import com.tennispro.core.protocol.WearCodec
 import com.tennispro.core.protocol.WearPaths
+import com.tennispro.core.scoring.MatchStateCodec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -57,6 +61,36 @@ class WatchWearableListenerService : WearableListenerService() {
             }
 
             is PhoneToWatch.Status -> WatchEventBus.publishStatus(message)
+        }
+    }
+
+    /**
+     * Fires for the latched [WearPaths.MATCH_STATE] DataItem — including once on
+     * reconnect, replaying whatever the phone last set, which is the whole point
+     * of using `DataClient` for the score instead of a `MessageClient` event.
+     */
+    override fun onDataChanged(dataEvents: DataEventBuffer) {
+        // DataEventBuffer wraps a native resource and is not released for us.
+        try {
+            for (event in dataEvents) {
+                if (event.dataItem.uri.path != WearPaths.MATCH_STATE) continue
+                when (event.type) {
+                    DataEvent.TYPE_CHANGED -> {
+                        val map = DataMapItem.fromDataItem(event.dataItem).dataMap
+                        val json = map.getString(WearPaths.MATCH_STATE_KEY)
+                        val projection = json?.let { MatchStateCodec.decodeProjection(it) }
+                        if (projection == null) {
+                            Log.w(TAG, "Undecodable match state DataItem")
+                        } else {
+                            WatchEventBus.publishMatchState(projection)
+                        }
+                    }
+
+                    DataEvent.TYPE_DELETED -> WatchEventBus.publishMatchState(null)
+                }
+            }
+        } finally {
+            dataEvents.release()
         }
     }
 

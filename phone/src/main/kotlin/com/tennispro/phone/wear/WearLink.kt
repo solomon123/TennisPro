@@ -1,14 +1,19 @@
 package com.tennispro.phone.wear
 
 import android.content.Context
+import android.net.Uri
 import android.os.SystemClock
 import android.util.Log
 import com.google.android.gms.wearable.CapabilityClient
+import com.google.android.gms.wearable.PutDataMapRequest
+import com.google.android.gms.wearable.PutDataRequest
 import com.google.android.gms.wearable.Wearable
 import com.tennispro.core.protocol.AlertKind
 import com.tennispro.core.protocol.PhoneToWatch
 import com.tennispro.core.protocol.WearCodec
 import com.tennispro.core.protocol.WearPaths
+import com.tennispro.core.scoring.MatchProjection
+import com.tennispro.core.scoring.MatchStateCodec
 import kotlinx.coroutines.tasks.await
 import kotlin.random.Random
 
@@ -38,6 +43,7 @@ class WearLink(context: Context) {
     private val appContext = context.applicationContext
     private val messageClient = Wearable.getMessageClient(appContext)
     private val capabilityClient = Wearable.getCapabilityClient(appContext)
+    private val dataClient = Wearable.getDataClient(appContext)
 
     suspend fun reachableWatches(): List<WatchNode> = runCatching {
         capabilityClient
@@ -117,7 +123,36 @@ class WearLink(context: Context) {
     suspend fun sendStatus(recording: Boolean, text: String): SendOutcome =
         send(PhoneToWatch.Status(recording = recording, text = text))
 
+    /**
+     * Pushes the live score to the [WearPaths.MATCH_STATE] DataItem, or clears it
+     * when [projection] is null (match ended).
+     *
+     * `DataClient`, not `MessageClient`: this is latched, replayed-on-reconnect
+     * state, not a fire-and-forget event — see [WearPaths]. It goes to every node
+     * that has ever seen this path, so unlike [send] there is no need to first
+     * enumerate reachable watches.
+     */
+    suspend fun sendMatchState(projection: MatchProjection?): SendOutcome = runCatching {
+        if (projection == null) {
+            dataClient.deleteDataItems(matchStateUri()).await()
+        } else {
+            val request = PutDataMapRequest.create(WearPaths.MATCH_STATE).apply {
+                dataMap.putString(WearPaths.MATCH_STATE_KEY, MatchStateCodec.encodeProjection(projection))
+                dataMap.putLong(KEY_UPDATED_AT, System.currentTimeMillis())
+            }.asPutDataRequest().setUrgent()
+            dataClient.putDataItem(request).await()
+        }
+        SendOutcome.Sent(1)
+    }.getOrElse {
+        Log.w(TAG, "Match state sync failed", it)
+        SendOutcome.Failed(it.message ?: "unknown Data Layer error")
+    }
+
+    private fun matchStateUri(): Uri =
+        Uri.Builder().scheme(PutDataRequest.WEAR_URI_SCHEME).path(WearPaths.MATCH_STATE).build()
+
     private companion object {
+        const val KEY_UPDATED_AT = "updatedAtEpochMs"
         const val TAG = "WearLink"
     }
 }

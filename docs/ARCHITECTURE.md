@@ -3,7 +3,7 @@
 ## Modules
 
 ```
-:core    Pure Kotlin/JVM. Wire protocol today; match state and scoring in Phase 1.
+:core    Pure Kotlin/JVM. Wire protocol and the tennis scoring engine.
          Android-free on purpose, so it unit-tests on the JVM in milliseconds.
 :phone   Android app. CameraX capture, storage, UI, phone side of the Data Layer.
 :wear    Wear OS app. Haptics, tap input, watch side of the Data Layer.
@@ -23,7 +23,7 @@ Two transports, chosen for different jobs:
   four seconds late is worse than one that never arrives.
 - **`DataClient`** (`/tennispro/match_state`) for latched state: the current score.
   DataItems replay on reconnect, so the watch recovers the right score after a
-  Bluetooth dropout without the phone having to notice. Wired up in Phase 1.
+  Bluetooth dropout without the phone having to notice.
 
 Node discovery goes through `CapabilityClient`, not `NodeClient`: "every connected
 node" can include a paired tablet or a second watch that has never had the app
@@ -42,6 +42,30 @@ stamps a `Ping`, the watch echoes that value back untouched in the `Pong`, and t
 phone subtracts. The two devices' monotonic clocks share no epoch, so any direct
 phone-minus-watch subtraction would be meaningless. Do not "improve" this by
 having the watch report its own timestamp.
+
+## Scoring
+
+`core/scoring/Scoring.kt` is a pure fold: `MatchState` is just rules
+(`MatchConfig`) plus a point-by-point log (`history: List<Side>`), and every
+displayable field — game score, set score, whose serve it is, who has won —
+is recomputed from scratch by folding over that log (`project`). Undo is
+therefore "drop the last point and refold," never a hand-written inverse of a
+deuce/tiebreak/set-boundary transition, which is the class of bug this
+approach avoids entirely — see `ScoringTest` for the boundary cases (deuce,
+no-ad, tiebreak entry and win, best-of-N, undo across a set boundary).
+
+The watch never sees `MatchState`. `MatchController` (in `:phone`) is the only
+place that mutates it; the watch is pushed a `MatchProjection` — the display
+snapshot, with no history — over the `MATCH_STATE` DataItem. This mirrors the
+phone/watch asymmetry everywhere else in this codebase: the phone decides
+what things mean, the watch displays and generates input.
+
+A watch gesture and a phone button both resolve through `MatchController.pointFor`
+/ `.undo`, so there is exactly one place deciding whether a point also counts
+as a game/set/match win worth a distinct haptic (`AlertKind.GAME_WON` /
+`SET_WON` / `MATCH_WON`, sent as an ordinary fire-and-forget `Alert` — not
+inferred by the watch diffing the DataItem, which would misfire on a
+reconnect replay of old state).
 
 ## Camera ownership
 
@@ -101,3 +125,8 @@ rate actually pays for itself. The `tryBind` fallback structure is where it slot
 - **Calibration drift detection.** A fence mount gets bumped. Silently wrong
   calibration is worse than none, so periodic line re-detection and a "camera
   moved, recalibrate" warning are part of Phase 2, not an afterthought.
+- **Gesture arbitration between recording and scoring.** `RecordScreen`'s
+  bookmark long-press and `MatchController`'s undo long-press listen to the
+  same `WearEventBus` independently. Scoring and recording at once means one
+  long-press does both. Fine while the two are used one at a time; worth
+  fixing once a phase actually needs them running together.

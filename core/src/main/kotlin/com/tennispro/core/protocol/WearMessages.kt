@@ -20,6 +20,18 @@ enum class AlertKind {
 
     /** Confirmation that a video bookmark was written. */
     BOOKMARK_SAVED,
+
+    /** A game was just won. Phase 1 scoring. */
+    GAME_WON,
+
+    /** A set was just won. Phase 1 scoring. */
+    SET_WON,
+
+    /** The match was just won. Phase 1 scoring. */
+    MATCH_WON,
+
+    /** The last point was undone from the watch or phone. Phase 1 scoring. */
+    UNDO,
 }
 
 /** Physical button / gesture the user performed on the watch. */

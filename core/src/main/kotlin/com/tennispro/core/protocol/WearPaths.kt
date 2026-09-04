@@ -24,6 +24,9 @@ object WearPaths {
     const val WATCH_TO_PHONE = "/tennispro/w2p"
     const val MATCH_STATE = "/tennispro/match_state"
 
+    /** Key of the JSON-encoded [com.tennispro.core.scoring.MatchProjection] inside the [MATCH_STATE] DataMap. */
+    const val MATCH_STATE_KEY = "projection"
+
     const val CAPABILITY_PHONE = "tennispro_phone"
     const val CAPABILITY_WATCH = "tennispro_watch"
 }
