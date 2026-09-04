@@ -71,6 +71,11 @@ dependencies {
     implementation(libs.androidx.camera.video)
     implementation(libs.androidx.camera.view)
 
+    // Pose landmarks, to narrow a serve's search window to when the swing
+    // actually happens — see docs/ARCHITECTURE.md's Serve speed section for
+    // why this isn't used to pinpoint contact directly.
+    implementation(libs.mediapipe.tasks.vision)
+
     implementation(libs.play.services.wearable)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.play.services)

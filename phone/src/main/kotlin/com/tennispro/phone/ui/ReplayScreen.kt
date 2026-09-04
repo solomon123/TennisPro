@@ -7,6 +7,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.MediaController
 import android.widget.VideoView
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,8 +17,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -33,9 +37,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.tennispro.core.court.CourtDimensions
@@ -44,9 +50,13 @@ import com.tennispro.phone.calibration.CalibrationStorage
 import com.tennispro.phone.replay.VideoFrameSource
 import com.tennispro.phone.storage.MatchSession
 import com.tennispro.phone.storage.MatchStorage
+import com.tennispro.phone.vision.ServeAnalysisResult
+import com.tennispro.phone.vision.ServeAnalyzer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.roundToInt
 
 /** Scrubbing (frame-accurate, for calibration QA) vs. actually watching the match back. */
 private enum class ReplayMode { SCRUB, PLAY }
@@ -187,6 +197,8 @@ private fun SessionReplay(
     }
 
     Column(Modifier.fillMaxSize()) {
+        BookmarkAnalysisSection(session, matchStorage, calibrationStorage)
+
         when (mode) {
             ReplayMode.PLAY -> VideoPlayer(
                 videoFile = matchStorage.videoFileFor(session),
@@ -250,6 +262,92 @@ private fun SessionReplay(
         ) {
             ReplayModeChip("Scrub", selected = mode == ReplayMode.SCRUB) { mode = ReplayMode.SCRUB }
             ReplayModeChip("Play", selected = mode == ReplayMode.PLAY) { mode = ReplayMode.PLAY }
+        }
+    }
+}
+
+/**
+ * Turns a marked moment into a serve speed estimate — see [ServeAnalyzer] for
+ * the actual pipeline. One [ServeAnalyzer] per session visit: it holds the
+ * loaded MediaPipe pose model, expensive enough to build that it should not
+ * be recreated per button tap, released via [DisposableEffect] when this
+ * leaves composition.
+ */
+@Composable
+private fun BookmarkAnalysisSection(
+    session: MatchSession,
+    matchStorage: MatchStorage,
+    calibrationStorage: CalibrationStorage,
+) {
+    if (session.bookmarks.isEmpty()) return
+
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val analyzer = remember(calibrationStorage) { ServeAnalyzer(context, calibrationStorage) }
+    DisposableEffect(analyzer) { onDispose { analyzer.close() } }
+
+    var analyzingOffsetMs by remember { mutableStateOf<Long?>(null) }
+    var result by remember { mutableStateOf<ServeAnalysisResult?>(null) }
+
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text("Analyze a marked moment as a serve", style = MaterialTheme.typography.labelLarge)
+        Spacer(Modifier.height(6.dp))
+
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            session.bookmarks.forEach { bookmark ->
+                OutlinedButton(
+                    enabled = analyzingOffsetMs == null,
+                    onClick = {
+                        analyzingOffsetMs = bookmark.offsetMs
+                        result = null
+                        scope.launch {
+                            val outcome = withContext(Dispatchers.Default) {
+                                analyzer.analyze(session, matchStorage, bookmark.offsetMs)
+                            }
+                            result = outcome
+                            analyzingOffsetMs = null
+                        }
+                    },
+                ) { Text(formatElapsed(bookmark.offsetMs)) }
+            }
+        }
+
+        if (analyzingOffsetMs != null) {
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Analyzing…", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
+        result?.let { outcome ->
+            Spacer(Modifier.height(8.dp))
+            when (outcome) {
+                is ServeAnalysisResult.Success -> {
+                    val estimate = outcome.estimate
+                    Text(
+                        "~${estimate.kmh.roundToInt()} km/h ± ${estimate.errorBandPercent.roundToInt()}%",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        "Contact at ${formatElapsed(outcome.contactTimeMs)}" +
+                            (outcome.bounceTimeMs?.let { " · bounce at ${formatElapsed(it)}" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                is ServeAnalysisResult.Failure -> Text(
+                    outcome.reason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
         }
     }
 }

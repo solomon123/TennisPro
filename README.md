@@ -5,7 +5,9 @@ match, scores it from your wrist, and — in later phases — estimates serve sp
 and calls the service line.
 
 **Phases 0-2 are complete and verified on real hardware** (a Galaxy S25 Ultra and a
-Galaxy Watch8 Classic). No computer vision yet.
+Galaxy Watch8 Classic). **Phase 3 (serve speed) is code-complete and crash-free on
+that hardware; its accuracy is not yet verified** — see
+[Verifying Phase 3](#verifying-phase-3).
 
 Before trusting anything this app eventually says about speed or line calls, read
 [docs/ACCURACY.md](docs/ACCURACY.md). Short version: serve speed lands within about
@@ -136,6 +138,41 @@ Galaxy S25 Ultra, back and front camera both:
    [ARCHITECTURE.md](docs/ARCHITECTURE.md#calibration) for why this device
    needed two separate fixes, one for each.
 
+## Verifying Phase 3
+
+`:core:test` covers the pipeline's pure math with synthetic data:
+`BallDetectorTest` (frame differencing + blob labeling on synthetic moving
+blobs), `KalmanTracker2DTest` (known trajectory plus injected noise/dropouts),
+`TrajectoryTest` (synthetic contact/vertex cases), `ServeSpeedTest` (known
+homography plus synthetic trajectory against expected speed and error band).
+
+What's confirmed on a Galaxy S25 Ultra:
+
+1. Record a clip, mark a bookmark near a serve, open **Replay**, tap the
+   bookmark chip's **Analyze serve** action. The pipeline runs
+   (`PoseSwingWindow` → `BallDetector` → `KalmanTracker2D` → `Trajectory` →
+   `ServeSpeed`) end to end without crashing, and reports a speed with an
+   error band (`~13 km/h ± 18%` on the first successful run) rather than
+   hanging or silently failing.
+
+What's **not yet verified — accuracy against a real serve**:
+
+2. The first on-device run above was filmed indoors, pointed at a TV playing
+   a broadcast match — useful for confirming the pipeline runs end to end,
+   but not a valid accuracy test: calibration measures real-world distance
+   across whatever plane the four corners were tapped on, and a TV screen has
+   no geometric relationship to the broadcast camera's own separate filming
+   of the match (see [ARCHITECTURE.md](docs/ARCHITECTURE.md#serve-speed)).
+   That run's ±18% band (implying a healthy ~10-frame tracking lock) is a
+   good sign for tracking quality, but the reported speed itself is
+   meaningless.
+3. Still needed: mount the phone per the Setup section on a real court,
+   calibrate against the real court lines, record a real serve, and check
+   the reported speed against plausibility (club-level serves land roughly
+   120-180 km/h) or a radar gun if one's available. Also confirm the
+   bounce-vertex timestamp lines up with where the ball visibly lands when
+   scrubbing that frame in Replay.
+
 ## Where this is going
 
 | Phase | Scope | State |
@@ -143,7 +180,7 @@ Galaxy S25 Ultra, back and front camera both:
 | 0 | Scaffolding, recording, phone↔watch link | **Done**, proven on court |
 | 1 | Manual scoring from the watch, persisted match state | **Done**, proven on hardware |
 | 2 | Court calibration UI + video replay harness | **Done**, proven on hardware |
-| 3 | Serve speed | Planned |
+| 3 | Serve speed | Code complete, crash-free on hardware, **accuracy unverified** — pending a real-court test |
 | 4 | Service line in/out calls | Planned |
 | 5 | Clip export, match history, stats | Stretch |
 

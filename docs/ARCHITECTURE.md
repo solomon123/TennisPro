@@ -3,9 +3,9 @@
 ## Modules
 
 ```
-:core    Pure Kotlin/JVM. Wire protocol, the tennis scoring engine, and the
-         court calibration homography. Android-free on purpose, so it
-         unit-tests on the JVM in milliseconds.
+:core    Pure Kotlin/JVM. Wire protocol, the tennis scoring engine, the court
+         calibration homography, and the serve-speed vision math. Android-free
+         on purpose, so it unit-tests on the JVM in milliseconds.
 :phone   Android app. CameraX capture, storage, UI, phone side of the Data Layer.
 :wear    Wear OS app. Haptics, tap input, watch side of the Data Layer.
 ```
@@ -203,6 +203,88 @@ high-speed modes are resolution-capped and inconsistently exposed. Reaching 120 
 will likely need Camera2 interop, and that work belongs in Phase 3 where the frame
 rate actually pays for itself. The `tryBind` fallback structure is where it slots in.
 
+## Serve speed
+
+`core/vision/` follows the same "hand-rolled, pure, unit-tested" style as
+scoring and calibration — no OpenCV, no trained model, per the decisions
+made going into Phase 3 (see `docs/ACCURACY.md`'s "classical CV first" plan).
+The pipeline, end to end:
+
+1. **A rough window.** The user drops a bookmark near the serve (the
+   existing bookmark feature, unchanged); analysis searches
+   `[bookmark - 1s, bookmark + 3s]`.
+2. **`PoseSwingWindow` narrows that window** using MediaPipe Tasks'
+   `PoseLandmarker` (`RunningMode.VIDEO`), tracking the right-wrist landmark's
+   vertical motion to find roughly when the swing happens, ±700ms. This is
+   deliberately **not** used to pinpoint the contact frame — a body-joint
+   pose model has no way to know the exact instant of racket-ball contact.
+   Its only job is making sure the ball tracker isn't searching a whole
+   multi-second window blindly, which might contain other motion (a
+   returning opponent, a ball boy). If pose detection is unavailable or
+   inconclusive, it falls back to the unnarrowed window rather than failing.
+3. **`BallDetector` finds ball candidates per frame**: consecutive-frame
+   differencing on the grayscale Y-plane, thresholded, connected-component
+   blob labeling, filtered by plausible size.
+4. **`KalmanTracker2D`** (a hand-rolled constant-velocity 2D filter) tracks
+   the ball across frames, predicting through missed detections and gating
+   which candidate to accept each frame by distance from the prediction.
+5. **`Trajectory.findContactIndex`** finds the contact frame as the sharpest
+   frame-to-frame speed increase in the tracked path — the toss's
+   near-stationary apex giving way to the racket's acceleration — rather
+   than trusting the pose window to be frame-precise, which it isn't.
+   **`Trajectory.findBounceIndex`** finds the bounce the same way Phase 4's
+   line-calling will need to: the trajectory vertex, where vertical image
+   motion reverses. Written once here, reusable there.
+6. **`ServeSpeed.estimate`** converts the pixel displacement between
+   post-contact frames into meters using the *local scale* of Phase 2's
+   `Homography` — a finite-difference Jacobian at the ball's image position,
+   not a direct `mapToCourt` of an above-ground point, which would place the
+   ball at a nonsensical on-court coordinate. Divides by elapsed frame time
+   to get speed, and always returns an **error band** alongside it
+   (`100 / frames-of-baseline-lock + 8`, an 8% floor that is never claimed
+   to be beaten) — never a bare number, per `docs/ACCURACY.md`.
+
+**Calibration must be against the real scene the camera is pointed at.**
+The homography measures real-world distance across whatever plane was
+tapped during calibration — if that plane is a TV playing a broadcast match
+rather than the actual court, the pipeline still runs and still reports a
+number with an error band, but the number is meaningless: it has no
+geometric relationship to the broadcast camera's own separate filming of
+the match. This is exactly what happened testing this phase indoors (see
+below) — worth remembering before treating any indoor/screen test as an
+accuracy signal.
+
+### `FrameSequenceSource`: why it doesn't use `ImageReader`
+
+Phase 2's `VideoFrameSource` re-seeks from the nearest keyframe on every
+`getFrameAtTime` call — fine for one frame at a time in a scrub UI, too slow
+to walk every frame across a serve. `FrameSequenceSource` is the sequential
+decoder that was deferred at the time.
+
+The first implementation paired `MediaCodec` with a `Surface`-backed
+`ImageReader` (the standard pattern) and crashed on-device with a native
+abort: `JNI DETECTED ERROR IN APPLICATION: non-zero capacity for nullptr
+pointer: 1 in call to NewDirectByteBuffer from
+android.media.ImageReader$SurfaceImage.nativeCreatePlanes`. Adding proper
+`OnImageAvailableListener` synchronization (a dedicated `HandlerThread` +
+`Semaphore`, since `releaseOutputBuffer(index, render=true)` delivers frames
+to the `Surface` asynchronously) did **not** fix it — confirmed by
+reproducing the identical crash a second time on real hardware. Root cause:
+a hardware decoder can write to a `Surface` in an opaque, GPU-private buffer
+format that `ImageReader` cannot safely expose as CPU-readable
+`YUV_420_888` planes, regardless of synchronization — an architectural
+mismatch, not a timing bug.
+
+The fix was to drop `Surface`/`ImageReader` entirely: configure the codec
+with no output surface (`configure(format, null, null, 0)`) and read each
+frame directly via `MediaCodec.getOutputImage(outputIndex)`. This reads
+straight from the codec's own output buffer and has no such failure mode.
+Verified via `javap` against the SDK's `android.jar` before writing the
+replacement — the same discipline that caught wrong CameraX API assumptions
+twice in Phase 2, applied here to a new API surface (`MediaCodec`'s
+image-output path, and separately MediaPipe Tasks) before spending an
+on-device iteration on it.
+
 ## Deliberately deferred
 
 - **Real-time inference during capture.** Serve speed is computed from the buffered
@@ -210,14 +292,14 @@ rate actually pays for itself. The `tryBind` fallback structure is where it slot
   inference alongside high-frame-rate capture will thermally throttle a phone
   inside a set. Only line calling genuinely needs low latency.
 - **Real line/edge-based drift re-detection.** Phase 2's drift check is a rough
-  pixel-difference heuristic (see the Calibration section above) — the real
-  version is classical-CV work that belongs alongside Phase 3/4's ball
-  detector, which is the first thing in this project to actually need a CV
-  dependency.
-- **A sequential high-throughput frame decoder.** The Phase 2 replay harness
-  uses `MediaMetadataRetriever`, adequate for a scrub UI. A `MediaExtractor`/
-  `MediaCodec` decoder is worth building once Phase 3/4 needs to walk many
-  frames in sequence fast, not before.
+  pixel-difference heuristic (see the Calibration section above) — Phase 3
+  added the classical-CV building blocks (`BallDetector`'s frame differencing
+  and blob labeling) this would reuse, but the drift check itself hasn't
+  been upgraded to use them yet.
+- **A constant-acceleration/gravity-aware trajectory model.** `KalmanTracker2D`
+  is constant-velocity, a first cut in the same spirit as `wear/Haptics.kt`'s
+  waveforms. Worth revisiting if tracking quality against real-court footage
+  proves it insufficient.
 - **Gesture arbitration between recording and scoring.** `RecordScreen`'s
   bookmark long-press and `MatchController`'s undo long-press listen to the
   same `WearEventBus` independently. Scoring and recording at once means one
