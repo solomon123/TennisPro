@@ -4,8 +4,8 @@ Turns a phone camera and a Galaxy Watch into a tennis match assistant: records t
 match, scores it from your wrist, and — in later phases — estimates serve speed
 and calls the service line.
 
-**Phases 0 and 1 are complete and verified on real hardware** (a Galaxy S25 Ultra
-and a Galaxy Watch8 Classic). No computer vision yet.
+**Phases 0-2 are complete and verified on real hardware** (a Galaxy S25 Ultra and a
+Galaxy Watch8 Classic). No computer vision yet.
 
 Before trusting anything this app eventually says about speed or line calls, read
 [docs/ACCURACY.md](docs/ACCURACY.md). Short version: serve speed lands within about
@@ -19,6 +19,11 @@ Configured for this setup — change the assumptions in the docs if yours differ
 - **Watch:** Galaxy Watch 7/8/Ultra (Wear OS 5+). Galaxy Watch 3 and older run
   Tizen and cannot install the watch app at all.
 - **Mount:** behind the baseline, 2 m or higher, centred on the centre mark.
+- **Camera:** back by default; some fence/clamp mounts hold the phone screen-out,
+  putting the front camera on the court instead — switch it on Home under
+  "Camera facing the court" if that's your setup. Both are recorded and previewed
+  correctly; see [ARCHITECTURE.md](docs/ARCHITECTURE.md#calibration) for a real
+  device-specific rotation bug this surfaced and how it's handled.
 - **Format:** singles first, doubles geometry kept configurable.
 - **Storage:** raw footage kept in full, deletable per-recording or all at once
   from the home screen.
@@ -98,13 +103,46 @@ message in both directions with no error anywhere except `adb logcat`'s
 buttons needed `Modifier.weight(1f)` to share width, since without it they could
 overflow the dialog on this phone's landscape lock.
 
+## Verifying Phase 2
+
+Homography math (corner round-trip, inverse, degenerate-input rejection) and the
+drift-difference math are covered by `:core:test`'s `CourtTest`. Confirmed on a
+Galaxy S25 Ultra, back and front camera both:
+
+1. Mount the phone per the Setup section above. Open **Calibrate court**, hit
+   **Freeze frame**, and tap the four baseline corners in order (near-left,
+   near-right, far-left, far-right). The projected cyan grid — outer court,
+   net, both service lines — should overlay the real lines closely. If it
+   doesn't, **Retap**; if the four taps were too close together or nearly in a
+   line, the app says so rather than saving a bad calibration.
+2. **Save**, then check Home shows **Calibrated**.
+3. **Record a match**, and confirm no "Camera may have moved" chip appears
+   (the mount hasn't moved since calibrating).
+4. Open **Replay**, pick that recording. **Scrub** shows the calibration grid
+   tracking the court accurately at multiple points in the video, not just the
+   moment calibrated — try **Calibrate from this frame** as the other entry
+   point into the same tap flow. **Play** actually watches the recording back
+   at normal speed with play/pause/seek.
+5. Nudge the phone's mount slightly and reopen **Record a match** — the
+   "Camera may have moved" chip should now appear. This is a rough
+   pixel-difference check, not real line detection (see
+   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)'s Calibration section) — it's
+   expected to miss a small nudge and flag a big lighting change, so judge it
+   loosely, not as a precise trigger.
+6. If using the front camera: switch to it on Home, confirm the live preview
+   in both **Calibrate court** and **Record a match** is right-side up, then
+   record a clip and confirm **Replay** plays it back right-side up too. Both
+   are genuinely necessary checks, not redundant — see
+   [ARCHITECTURE.md](docs/ARCHITECTURE.md#calibration) for why this device
+   needed two separate fixes, one for each.
+
 ## Where this is going
 
 | Phase | Scope | State |
 | --- | --- | --- |
 | 0 | Scaffolding, recording, phone↔watch link | **Done**, proven on court |
 | 1 | Manual scoring from the watch, persisted match state | **Done**, proven on hardware |
-| 2 | Court calibration UI + video replay harness | Planned |
+| 2 | Court calibration UI + video replay harness | **Done**, proven on hardware |
 | 3 | Serve speed | Planned |
 | 4 | Service line in/out calls | Planned |
 | 5 | Clip export, match history, stats | Stretch |

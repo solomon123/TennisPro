@@ -15,7 +15,7 @@ import com.tennispro.phone.TennisProApp
 import com.tennispro.phone.camera.RecordingService
 
 /** A handful of screens; a navigation library would be more moving parts than routes. */
-enum class Screen { HOME, RECORD, WATCH_CHECK, SCORE }
+enum class Screen { HOME, RECORD, WATCH_CHECK, SCORE, CALIBRATE, REPLAY }
 
 @Composable
 fun AppRoot(
@@ -39,14 +39,19 @@ fun AppRoot(
                     storage = app.storage,
                     diagnostics = diagnostics,
                     matchController = matchController,
+                    calibrationStorage = app.calibrationStorage,
+                    service = service,
                     onRecord = { screen = Screen.RECORD },
                     onWatchCheck = { screen = Screen.WATCH_CHECK },
                     onScore = { screen = Screen.SCORE },
+                    onCalibrate = { screen = Screen.CALIBRATE },
+                    onReplay = { screen = Screen.REPLAY },
                 )
 
                 Screen.RECORD -> RecordScreen(
                     service = service,
                     wearLink = app.wearLink,
+                    calibrationStorage = app.calibrationStorage,
                     cameraGranted = cameraGranted,
                     onRequestPermissions = onRequestPermissions,
                     onStartRecording = onStartRecording,
@@ -60,6 +65,18 @@ fun AppRoot(
 
                 Screen.SCORE -> ScoreScreen(
                     controller = matchController,
+                    onBack = { screen = Screen.HOME },
+                )
+
+                Screen.CALIBRATE -> CalibrateScreen(
+                    service = service,
+                    calibrationStorage = app.calibrationStorage,
+                    onBack = { screen = Screen.HOME },
+                )
+
+                Screen.REPLAY -> ReplayScreen(
+                    matchStorage = app.storage,
+                    calibrationStorage = app.calibrationStorage,
                     onBack = { screen = Screen.HOME },
                 )
             }

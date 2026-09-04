@@ -3,8 +3,9 @@
 ## Modules
 
 ```
-:core    Pure Kotlin/JVM. Wire protocol and the tennis scoring engine.
-         Android-free on purpose, so it unit-tests on the JVM in milliseconds.
+:core    Pure Kotlin/JVM. Wire protocol, the tennis scoring engine, and the
+         court calibration homography. Android-free on purpose, so it
+         unit-tests on the JVM in milliseconds.
 :phone   Android app. CameraX capture, storage, UI, phone side of the Data Layer.
 :wear    Wear OS app. Haptics, tap input, watch side of the Data Layer.
 ```
@@ -100,6 +101,95 @@ Bookmarks are append-only because they are written mid-recording, sometimes from
 watch message: a torn rewrite of a whole file loses the session's marks, a torn
 append loses one line.
 
+## Calibration
+
+`core/court/Court.kt` follows the same "store the log, derive the projection"
+split as scoring: `CalibrationPoints` — the four tapped corners, in a fixed
+near-left/near-right/far-left/far-right order — is the only thing persisted or
+sent between layers. `Homography` is always recomputed from those four points
+on demand via `Homography.fromCalibration`, never itself stored.
+
+The homography is a standard 4-point Direct Linear Transform, solved as an
+8-equation/8-unknown linear system with the homogeneous scale fixed at `h9 = 1`.
+That fix is only safe because a phone photographing a physical, finite court
+plane can never send a real point to infinity — the one case where `h9 = 1`
+would be wrong — which is also why `Homography` only ever takes exactly four
+correspondences rather than a general least-squares fit over more: the
+assumption stops being obviously safe once the point set isn't guaranteed to
+come from a real camera view of a real plane.
+
+`CalibrationStorage` (in `:phone`) is a single device-level slot, not
+per-recording — mirrors `ScoreStorage`'s reasoning: one camera stays mounted in
+one spot across many recordings (see the README's Setup section), so
+calibration is a property of the mount, not of any one session.
+
+**Drift detection is a first cut, not real detection.** `frameDifference` is a
+mean-absolute-difference over a small downscaled grayscale grid, compared
+against a saved reference frame. It is not line/edge-based re-detection —
+that is classical-CV work that belongs alongside Phase 3/4's ball-detection
+pipeline (see docs/ACCURACY.md's "classical CV first" plan for the ball),
+which this project has no CV dependency for yet. This check will false-positive
+on a big lighting change and miss a small nudge; it exists to catch the case
+that actually matters — the mount got bumped and the frame looks nothing like
+the reference — the same "first cut, not a measurement" spirit as
+`wear/Haptics.kt`'s waveforms. It runs once, in `RecordScreen`, when the live
+preview comes up — not on Home, which does not bind a camera at all and only
+shows whether *some* calibration exists.
+
+The video replay harness (`phone/replay/VideoFrameSource.kt`) is deliberately
+built on `MediaMetadataRetriever.getFrameAtTime`, not a sequential
+`MediaExtractor`/`MediaCodec` decoder: frame-accurate but not fast, which is
+the right trade for a scrub-through-frames UI. A faster sequential decoder is
+worth building once Phase 3/4's detector actually needs that throughput.
+`ReplayScreen` also has a separate **Play** mode (`android.widget.VideoView`)
+for actually watching a recording back at normal speed — no new dependency,
+since the built-in widget is enough for that job.
+
+### Camera facing
+
+Some fence/clamp mounts hold the phone screen-out for monitoring, which puts
+the *front* camera on the court instead of the back one — a real mounting
+constraint a user of this app hit, not a hypothetical. `CameraFacing` /
+`CameraPreferences` (in `:phone/camera`) persist which physical camera to use,
+device-level like calibration, and `RecordingService.switchCamera` rebinds
+using the same `tryBind` retry structure the frame-rate fallback already uses
+— no new mechanism, just a different `CameraSelector`.
+
+**Two independent, real front-camera bugs turned up getting this right on a
+Galaxy S25 Ultra, and they needed two different fixes:**
+
+1. **The live preview came out upside down.** `PreviewView`'s default
+   `ImplementationMode.PERFORMANCE` (a `SurfaceView`) was not correctly
+   applying CameraX's own computed rotation for the front camera on this
+   device — confirmed via `adb logcat`'s `PreviewView`/`PreviewTransform`
+   lines, which showed CameraX computing `TransformationInfo{getRotationDegrees=0}`
+   for a configuration that was visibly rotated 180 degrees. Switching to
+   `ImplementationMode.COMPATIBLE` (a `TextureView`, which CameraX can
+   transform directly) fixed it in combination with feeding the front camera
+   the *opposite* `Surface.ROTATION_*` constant from what the back camera
+   uses — see the `tryBind`/`CameraPreview.kt` comments for the exact
+   reasoning and how it was verified in logs before being applied blind.
+2. **The recorded file came out upside down — a separate bug from #1, not the
+   same one.** Verified with `ffprobe` (not present on this project's build
+   machine by default, but essential for diagnosing this class of bug):
+   `VideoCapture.setTargetRotation` does not control the front camera's
+   recorded-file rotation on this hardware at all. Front and back recordings
+   came out of `tryBind` with the *identical* container rotation (`-180`,
+   an MP4 `tkhd` matrix) regardless of what was requested at capture time —
+   correct for the back camera, exactly 180 degrees wrong for the front.
+   There is no capture-time knob that reaches this, so `Mp4Rotation.kt` fixes
+   it after the fact: a direct, lossless rewrite of the `tkhd` box's rotation
+   matrix to identity, run once per front-camera recording right after
+   `VideoRecordEvent.Finalize`. It patches the file in place via
+   `RandomAccessFile` rather than reading it into memory, since a real match
+   recording can run to gigabytes.
+
+The lesson worth keeping: **a fix verified against the live preview does not
+verify the recorded file, and vice versa — they are separate CameraX
+pipelines that can (and here, did) disagree.** Anything touching capture
+orientation needs both checked independently, which is why the Phase 2
+verification steps in the README check them as two separate items.
+
 ## Frame rate
 
 `RecordingService` asks for 60 fps and falls back to the device default. Frame rate
@@ -119,12 +209,15 @@ rate actually pays for itself. The `tryBind` fallback structure is where it slot
   clip a second or two after contact; nobody needs it inside 100 ms, and running
   inference alongside high-frame-rate capture will thermally throttle a phone
   inside a set. Only line calling genuinely needs low latency.
-- **A replay harness.** Piping recorded files through the same vision pipeline
-  off-court is the single biggest productivity lever for Phases 3-4. Build it
-  alongside calibration, before any detector work.
-- **Calibration drift detection.** A fence mount gets bumped. Silently wrong
-  calibration is worse than none, so periodic line re-detection and a "camera
-  moved, recalibrate" warning are part of Phase 2, not an afterthought.
+- **Real line/edge-based drift re-detection.** Phase 2's drift check is a rough
+  pixel-difference heuristic (see the Calibration section above) — the real
+  version is classical-CV work that belongs alongside Phase 3/4's ball
+  detector, which is the first thing in this project to actually need a CV
+  dependency.
+- **A sequential high-throughput frame decoder.** The Phase 2 replay harness
+  uses `MediaMetadataRetriever`, adequate for a scrub UI. A `MediaExtractor`/
+  `MediaCodec` decoder is worth building once Phase 3/4 needs to walk many
+  frames in sequence fast, not before.
 - **Gesture arbitration between recording and scoring.** `RecordScreen`'s
   bookmark long-press and `MatchController`'s undo long-press listen to the
   same `WearEventBus` independently. Scoring and recording at once means one

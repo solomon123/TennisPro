@@ -1,6 +1,7 @@
 package com.tennispro.phone
 
 import android.app.Application
+import com.tennispro.phone.calibration.CalibrationStorage
 import com.tennispro.phone.score.MatchController
 import com.tennispro.phone.score.ScoreStorage
 import com.tennispro.phone.storage.MatchStorage
@@ -17,6 +18,7 @@ class TennisProApp : Application() {
 
     val storage: MatchStorage by lazy { MatchStorage(this) }
     val wearLink: WearLink by lazy { WearLink(this) }
+    val calibrationStorage: CalibrationStorage by lazy { CalibrationStorage(this) }
     private val scoreStorage: ScoreStorage by lazy { ScoreStorage(this) }
 
     // Reads any in-progress match from disk and starts listening for watch

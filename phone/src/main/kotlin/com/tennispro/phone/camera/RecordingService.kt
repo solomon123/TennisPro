@@ -8,13 +8,17 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.hardware.display.DisplayManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
 import android.util.Range
+import android.view.Display
+import android.view.Surface
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.MirrorMode
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
@@ -34,6 +38,7 @@ import com.tennispro.phone.R
 import com.tennispro.phone.storage.Bookmark
 import com.tennispro.phone.storage.MatchSession
 import com.tennispro.phone.storage.MatchStorage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -82,6 +87,7 @@ class RecordingService : LifecycleService() {
     private val binder = LocalBinder()
 
     private lateinit var storage: MatchStorage
+    private lateinit var cameraPreferences: CameraPreferences
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var preview: Preview? = null
@@ -94,9 +100,13 @@ class RecordingService : LifecycleService() {
     private val _state = MutableStateFlow<CaptureState>(CaptureState.Initialising)
     val state: StateFlow<CaptureState> = _state.asStateFlow()
 
+    private val _facing = MutableStateFlow(CameraFacing.BACK)
+    val facing: StateFlow<CameraFacing> = _facing.asStateFlow()
+
     override fun onCreate() {
         super.onCreate()
         storage = MatchStorage(this)
+        cameraPreferences = CameraPreferences(this)
         createNotificationChannel()
         lifecycleScope.launch { bindCameraUseCases() }
     }
@@ -192,6 +202,19 @@ class RecordingService : LifecycleService() {
                     } else {
                         Log.i(TAG, "Recording saved: ${event.outputResults.outputUri}")
                         _state.value = CaptureState.Ready(currentResolution(), requestedFrameRate)
+
+                        // See the note on newVideoCapture in tryBind(): the front
+                        // camera's recorded file comes out of CameraX with the
+                        // wrong rotation baked into its container regardless of
+                        // what was requested at capture time, confirmed via
+                        // ffprobe. Patched after the fact rather than at capture
+                        // time since there is no capture-time knob that reaches it.
+                        if (_facing.value == CameraFacing.FRONT) {
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                runCatching { Mp4Rotation.stripVideoRotation(storage.videoFileFor(session)) }
+                                    .onFailure { Log.w(TAG, "Could not fix front-camera recording rotation", it) }
+                            }
+                        }
                     }
 
                     stopForegroundCompat()
@@ -207,6 +230,21 @@ class RecordingService : LifecycleService() {
 
     fun stopRecording() {
         activeRecording?.stop()
+    }
+
+    /**
+     * Rebinds the camera use cases with the other physical camera. Some
+     * fence/clamp mounts hold the phone screen-out, which puts the front
+     * camera facing the court instead of the back one.
+     *
+     * A no-op while recording — rebinding would finalize it, the same
+     * invariant [tryBind] already relies on everywhere else.
+     */
+    fun switchCamera(newFacing: CameraFacing) {
+        if (activeRecording != null || newFacing == _facing.value) return
+        cameraPreferences.save(newFacing)
+        _state.value = CaptureState.Initialising
+        lifecycleScope.launch { bindCameraUseCases() }
     }
 
     /**
@@ -256,19 +294,22 @@ class RecordingService : LifecycleService() {
                 .build()
         }
 
+        val facing = cameraPreferences.load()
+
         // Try for 60 fps first. Frame rate is the single biggest lever on serve-speed
         // and bounce-location error, so it is worth a retry rather than silently
         // accepting 30. Some devices reject a hard 60-60 range for this combination
         // of use cases, hence the unconstrained fallback.
-        val bound = tryBind(provider, newRecorder(), Range(60, 60)) ||
-            tryBind(provider, newRecorder(), null)
+        val bound = tryBind(provider, newRecorder(), Range(60, 60), facing) ||
+            tryBind(provider, newRecorder(), null, facing)
         if (!bound) {
             _state.value = CaptureState.Error("Could not bind camera use cases")
             return
         }
 
+        _facing.value = facing
         _state.value = CaptureState.Ready(currentResolution(), requestedFrameRate)
-        Log.i(TAG, "Camera ready at ${currentResolution()} @ ${requestedFrameRate ?: "device default"} fps")
+        Log.i(TAG, "Camera ready ($facing) at ${currentResolution()} @ ${requestedFrameRate ?: "device default"} fps")
     }
 
     private var requestedFrameRate: Int? = null
@@ -277,28 +318,84 @@ class RecordingService : LifecycleService() {
         provider: ProcessCameraProvider,
         recorder: Recorder,
         frameRate: Range<Int>?,
+        facing: CameraFacing,
     ): Boolean = runCatching {
         provider.unbindAll()
 
-        val newPreview = Preview.Builder().build()
+        // Read fresh via DisplayManager, not a possibly-stale Activity window,
+        // since this binds from a Service that outlives any one activity.
+        val baseRotation = currentDisplayRotation()
+
+        // Confirmed via logcat's PreviewView/PreviewTransform lines on-device
+        // (Galaxy S25 Ultra): with targetRotation = ROTATION_90, CameraX itself
+        // computes TransformationInfo{getRotationDegrees=0, isMirroring=false}
+        // for the *front* camera preview — i.e. CameraX's own rotation math,
+        // not just our input, is producing a value that's empirically upside
+        // down on this hardware. Feeding the opposite target rotation for the
+        // front camera's *preview* is a direct, verified-in-logs correction to
+        // that computed value, not a guess about camera mounting angles.
+        val previewRotation = if (facing == CameraFacing.FRONT) rotate180(baseRotation) else baseRotation
+
+        val newPreview = Preview.Builder()
+            .setTargetRotation(previewRotation)
+            // Never mirror, front or back: the calibration UI taps court
+            // corners on this surface, and a mirrored display would silently
+            // swap left/right relative to what the sensor actually captured.
+            .setMirrorMode(MirrorMode.MIRROR_MODE_OFF)
+            .build()
+
+        // Deliberately *not* the same rotation as the preview above. Confirmed
+        // via ffprobe on-device: VideoCapture's own written rotation hint does
+        // not track setTargetRotation the way Preview's does — front and back
+        // recordings came out with the identical container rotation regardless
+        // of what was requested here, and that value is correct for the back
+        // camera but 180 degrees wrong for the front. baseRotation (unmodified,
+        // matching what was in place before the preview fix above) is what's
+        // actually confirmed correct for VideoCapture; the front camera's
+        // recorded-file rotation is fixed after the fact instead, in
+        // fixFrontCameraRotation, once it's known whether the finished file is
+        // actually wrong.
         val newVideoCapture = VideoCapture.Builder(recorder)
+            .setTargetRotation(baseRotation)
+            .setMirrorMode(MirrorMode.MIRROR_MODE_OFF)
             .apply { frameRate?.let { setTargetFrameRate(it) } }
             .build()
 
-        provider.bindToLifecycle(
-            this,
-            CameraSelector.DEFAULT_BACK_CAMERA,
-            newPreview,
-            newVideoCapture,
-        )
+        val selector = if (facing == CameraFacing.FRONT) {
+            CameraSelector.DEFAULT_FRONT_CAMERA
+        } else {
+            CameraSelector.DEFAULT_BACK_CAMERA
+        }
+
+        provider.bindToLifecycle(this, selector, newPreview, newVideoCapture)
 
         preview = newPreview
         videoCapture = newVideoCapture
         requestedFrameRate = frameRate?.upper
         true
     }.getOrElse {
-        Log.w(TAG, "Bind failed for frameRate=$frameRate", it)
+        Log.w(TAG, "Bind failed for frameRate=$frameRate facing=$facing", it)
         false
+    }
+
+    /**
+     * Queried via [DisplayManager], not `Context.getDisplay()` / the activity's
+     * window: this service binds the camera independently of any one activity
+     * (see the class doc), so it needs a display-rotation source that does not
+     * depend on one being currently attached.
+     */
+    private fun currentDisplayRotation(): Int {
+        val displayManager = getSystemService(DisplayManager::class.java)
+        return displayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: Surface.ROTATION_0
+    }
+
+    /** The opposite `Surface.ROTATION_*` constant, 180 degrees around. */
+    private fun rotate180(rotation: Int): Int = when (rotation) {
+        Surface.ROTATION_0 -> Surface.ROTATION_180
+        Surface.ROTATION_90 -> Surface.ROTATION_270
+        Surface.ROTATION_180 -> Surface.ROTATION_0
+        Surface.ROTATION_270 -> Surface.ROTATION_90
+        else -> rotation
     }
 
     private suspend fun awaitCameraProvider(): ProcessCameraProvider =

@@ -1,5 +1,6 @@
 package com.tennispro.phone.ui
 
+import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,7 +20,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -31,10 +31,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.camera.view.PreviewView
 import com.tennispro.core.protocol.Gesture
 import com.tennispro.core.protocol.WatchToPhone
+import com.tennispro.phone.calibration.CalibrationStorage
+import com.tennispro.phone.calibration.DriftDetector
+import com.tennispro.phone.calibration.DriftStatus
 import com.tennispro.phone.camera.CaptureState
 import com.tennispro.phone.camera.RecordingService
 import com.tennispro.phone.wear.WearEventBus
@@ -48,12 +49,16 @@ import android.os.SystemClock
 fun RecordScreen(
     service: RecordingService?,
     wearLink: WearLink,
+    calibrationStorage: CalibrationStorage,
     cameraGranted: Boolean,
     onRequestPermissions: () -> Unit,
     onStartRecording: () -> Unit,
     onBack: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val driftDetector = remember { DriftDetector(calibrationStorage) }
+    var previewView by remember { mutableStateOf<PreviewView?>(null) }
+    var driftStatus by remember { mutableStateOf<DriftStatus?>(null) }
     // Compose requires composable calls to be unconditional, so the fallback flow is
     // remembered up front rather than reached for behind an elvis on collectAsState.
     val fallbackState = remember { MutableStateFlow<CaptureState>(CaptureState.Initialising) }
@@ -96,10 +101,21 @@ fun RecordScreen(
         }
     }
 
+    // Checked once the preview is actually up, not on Home: a real drift check
+    // needs a live frame to compare against the calibration reference, and this
+    // is the first screen with a camera bound. See docs/ARCHITECTURE.md's
+    // Calibration section for why this is a rough approximation, not real
+    // line re-detection.
+    LaunchedEffect(state is CaptureState.Ready, previewView) {
+        if (state is CaptureState.Ready) {
+            previewView?.bitmap?.let { frame -> driftStatus = driftDetector.check(frame) }
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
 
         if (cameraGranted) {
-            CameraPreview(service)
+            CameraPreview(service, onPreviewViewReady = { previewView = it })
         } else {
             Column(
                 Modifier
@@ -123,6 +139,14 @@ fun RecordScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             TextButton(onClick = onBack) { Text("< Back") }
+
+            if (driftStatus is DriftStatus.PossibleDrift) {
+                Chip(
+                    text = "Camera may have moved",
+                    tint = MaterialTheme.colorScheme.error,
+                )
+                Spacer(Modifier.width(8.dp))
+            }
 
             when (state) {
                 is CaptureState.Recording -> Chip(
@@ -215,32 +239,6 @@ fun RecordScreen(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun CameraPreview(service: RecordingService?) {
-    val previewView = remember { mutableStateOf<PreviewView?>(null) }
-
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { context ->
-            PreviewView(context).apply {
-                // FIT_CENTER, not the default FILL_CENTER: the user has to see the
-                // whole frame to know the baseline and both service boxes are inside
-                // it. A cropped preview would hide exactly the part that matters.
-                scaleType = PreviewView.ScaleType.FIT_CENTER
-                previewView.value = this
-            }
-        },
-    )
-
-    DisposableEffect(service, previewView.value) {
-        val view = previewView.value
-        if (service != null && view != null) {
-            service.attachPreview(view.surfaceProvider)
-        }
-        onDispose { service?.detachPreview() }
     }
 }
 

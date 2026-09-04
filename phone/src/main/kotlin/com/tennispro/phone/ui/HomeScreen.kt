@@ -32,9 +32,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tennispro.core.scoring.ScoreFormat
 import com.tennispro.core.scoring.projection
+import com.tennispro.phone.calibration.CalibrationStorage
+import com.tennispro.phone.camera.CameraFacing
+import com.tennispro.phone.camera.CaptureState
+import com.tennispro.phone.camera.RecordingService
 import com.tennispro.phone.score.MatchController
 import com.tennispro.phone.storage.MatchSession
 import com.tennispro.phone.storage.MatchStorage
+import kotlinx.coroutines.flow.MutableStateFlow
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -44,9 +49,13 @@ fun HomeScreen(
     storage: MatchStorage,
     diagnostics: WatchDiagnostics,
     matchController: MatchController,
+    calibrationStorage: CalibrationStorage,
+    service: RecordingService?,
     onRecord: () -> Unit,
     onWatchCheck: () -> Unit,
     onScore: () -> Unit,
+    onCalibrate: () -> Unit,
+    onReplay: () -> Unit,
 ) {
     val activeMatch by matchController.match.collectAsState()
     var sessions by remember { mutableStateOf<List<MatchSession>>(emptyList()) }
@@ -55,11 +64,24 @@ fun HomeScreen(
     var confirmDelete by remember { mutableStateOf<MatchSession?>(null) }
     var confirmDeleteAll by remember { mutableStateOf(false) }
     var reloadToken by remember { mutableStateOf(0) }
+    var calibrated by remember { mutableStateOf(false) }
+
+    // Same fallback-flow pattern as RecordScreen: a plain val, not `by`, and a
+    // remembered flow so collectAsState always has something to observe even
+    // before the service is bound.
+    val fallbackFacing = remember { MutableStateFlow(CameraFacing.BACK) }
+    val fallbackCaptureState = remember { MutableStateFlow<CaptureState>(CaptureState.Initialising) }
+    val facing = (service?.facing ?: fallbackFacing).collectAsState().value
+    val recording = (service?.state ?: fallbackCaptureState).collectAsState().value is CaptureState.Recording
 
     LaunchedEffect(reloadToken) {
         sessions = storage.listSessions()
         totalBytes = storage.totalBytes()
         freeBytes = storage.freeBytes()
+        // Cheap presence check only — a real drift check needs a live camera
+        // frame to compare against, which Home does not bind one for. That
+        // check runs on RecordScreen instead, where the preview is already up.
+        calibrated = calibrationStorage.load() != null
     }
 
     LaunchedEffect(Unit) { diagnostics.refresh() }
@@ -101,6 +123,39 @@ fun HomeScreen(
                     tint = MaterialTheme.colorScheme.primary,
                 )
             }
+            Spacer(Modifier.width(8.dp))
+            Chip(
+                text = if (calibrated) "Calibrated" else "Not calibrated",
+                tint = if (calibrated) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error,
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Camera facing the court:",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(8.dp))
+            CameraFacingChip("Back", selected = facing == CameraFacing.BACK, enabled = !recording) {
+                service?.switchCamera(CameraFacing.BACK)
+            }
+            Spacer(Modifier.width(8.dp))
+            CameraFacingChip("Front", selected = facing == CameraFacing.FRONT, enabled = !recording) {
+                service?.switchCamera(CameraFacing.FRONT)
+            }
+        }
+        if (facing == CameraFacing.FRONT) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Front camera: verify recorded video isn't mirrored on this device before " +
+                    "trusting it — calibrating from Replay's \"Calibrate from this frame\" " +
+                    "(the actual recorded file) is the safer choice here over a live freeze.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         Spacer(Modifier.height(16.dp))
@@ -111,6 +166,15 @@ fun HomeScreen(
                 Text(if (activeMatch != null) "Resume score" else "Score match")
             }
             OutlinedButton(onClick = onWatchCheck) { Text("Watch check") }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(onClick = onCalibrate) {
+                Text(if (calibrated) "Recalibrate court" else "Calibrate court")
+            }
+            OutlinedButton(onClick = onReplay) { Text("Replay") }
             OutlinedButton(
                 onClick = { reloadToken++ },
             ) { Text("Refresh") }
@@ -195,6 +259,15 @@ fun HomeScreen(
                 TextButton(onClick = { confirmDeleteAll = false }) { Text("Keep") }
             },
         )
+    }
+}
+
+@Composable
+private fun CameraFacingChip(label: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    if (selected) {
+        Button(onClick = onClick, enabled = enabled) { Text(label) }
+    } else {
+        OutlinedButton(onClick = onClick, enabled = enabled) { Text(label) }
     }
 }
 
