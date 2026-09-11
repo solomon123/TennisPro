@@ -20,7 +20,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "TennisPro"
+rootProject.name = "TennisReplay"
 
 // Pure-JVM module: match state, scoring, and the phone<->watch wire protocol.
 // Kept Android-free on purpose so it unit-tests on the JVM in milliseconds.

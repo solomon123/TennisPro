@@ -1,5 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      The app itself never uses the network. INTERNET arrives only through
+      MediaPipe Tasks, whose TasksStatsLoggerFactory unconditionally uploads
+      usage stats (task name, device info, latencies) to Google via
+      com.google.android.datatransport, with no switch to turn it off. Removing
+      the permission keeps "nothing leaves the device" true, which the privacy
+      policy and Play's Data safety answers rely on. Phone<->watch messaging is
+      unaffected: the Wearable Data Layer runs inside Google Play services.
+      ACCESS_NETWORK_STATE stays — it transmits nothing, and JobScheduler
+      refuses datatransport's network-constrained upload job without it.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
 
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />

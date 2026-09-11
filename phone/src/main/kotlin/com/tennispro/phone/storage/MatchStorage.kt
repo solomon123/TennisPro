@@ -74,7 +74,7 @@ data class MatchSession(
  * Flat file storage for match recordings.
  *
  * Everything lives under app-specific external storage
- * (`Android/data/com.tennispro/files/Movies/sessions/<id>/`). That choice means no
+ * (`Android/data/com.tennisreplay/files/Movies/sessions/<id>/`). That choice means no
  * storage permission is needed on any supported API level and the files are still
  * reachable over USB or the Files app for pulling footage onto a laptop, which is
  * how the computer-vision work in Phases 3-4 will get its test data.

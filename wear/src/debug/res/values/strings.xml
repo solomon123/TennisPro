@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Debug builds install next to the Play build (applicationIdSuffix ".debug"); this tells the two icons apart. -->
+    <string name="app_name">TennisReplay dev</string>
+</resources>

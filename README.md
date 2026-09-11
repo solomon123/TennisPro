@@ -49,7 +49,12 @@ newer works and Gradle never needs to download one.
 
 Both APKs must be signed with the **same key** — including in debug, where the
 shared debug keystore handles it automatically. If the watch never shows up as
-connected, a signing mismatch is the first thing to check.
+connected, a signing mismatch is the first thing to check. Debug builds install as
+`com.tennisreplay.debug` ("TennisReplay dev"), next to a Play-installed
+`com.tennisreplay`; a debug phone app only pairs with a debug watch app.
+
+Release builds, the upload key and the Google Play steps are covered in
+[docs/PLAY_RELEASE.md](docs/PLAY_RELEASE.md).
 
 Install the phone APK to the phone and the wear APK to the watch (over ADB via
 Wi-Fi debugging, or by pushing a debug build through Android Studio with the watch

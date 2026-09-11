@@ -10,7 +10,8 @@
 :wear    Wear OS app. Haptics, tap input, watch side of the Data Layer.
 ```
 
-`:phone` and `:wear` share one `applicationId` (`com.tennispro`) and **must be
+`:phone` and `:wear` share one `applicationId` (`com.tennisreplay`; debug builds
+add `.debug` to both, so they install beside the Play build) and **must be
 signed with the same key**. The Wearable Data Layer pairs the two APKs on package
 name plus signing certificate; a mismatch fails silently — the watch simply never
 appears as a reachable node, with no error anywhere.
@@ -84,7 +85,7 @@ before asking it to record.
 
 ## Storage
 
-`Android/data/com.tennispro/files/Movies/sessions/<id>/`
+`Android/data/com.tennisreplay/files/Movies/sessions/<id>/`
 
 ```
 match.mp4         raw continuous recording
