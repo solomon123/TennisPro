@@ -29,12 +29,37 @@ data class SessionMeta(
     val frameRate: Int? = null,
 )
 
+/**
+ * One serve found by [com.tennispro.phone.vision.ServeScanner]. A net fault
+ * has no speed: the flight never reached the ground past the net, which is
+ * what the measurement needs.
+ */
+@Serializable
+data class DetectedServe(
+    val contactMs: Long,
+    val speedKmh: Double? = null,
+    val errorBandPercent: Double? = null,
+    val netFault: Boolean = false,
+    val inServiceBox: Boolean? = null,
+    val bounceXMeters: Double? = null,
+    val bounceYMeters: Double? = null,
+)
+
+/** The result of scanning one recording for serves; [error] set if the scan couldn't run at all. */
+@Serializable
+data class SessionServes(
+    val scannedAtEpochMs: Long,
+    val serves: List<DetectedServe>,
+    val error: String? = null,
+)
+
 /** A session as presented to the UI: metadata plus what is actually on disk. */
 data class MatchSession(
     val meta: SessionMeta,
     val dir: File,
     val videoFile: File,
     val bookmarks: List<Bookmark>,
+    val serves: SessionServes? = null,
 ) {
     val sizeBytes: Long get() = dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
 }
@@ -97,6 +122,15 @@ class MatchStorage(private val context: Context) {
         return bookmark
     }
 
+    /** Replaces the session's serve scan result (written once per scan, so a whole-file write is fine). */
+    fun writeServes(session: MatchSession, serves: SessionServes) {
+        runCatching {
+            File(session.dir, SERVES_NAME).writeText(json.encodeToString(SessionServes.serializer(), serves))
+        }.onFailure { Log.w(TAG, "Could not write serves", it) }
+    }
+
+    fun findSession(id: String): MatchSession? = File(root, id).takeIf { it.isDirectory }?.let { readSession(it) }
+
     fun listSessions(): List<MatchSession> =
         (root.listFiles { f -> f.isDirectory } ?: emptyArray())
             .mapNotNull { dir -> readSession(dir) }
@@ -127,7 +161,16 @@ class MatchStorage(private val context: Context) {
             dir = dir,
             videoFile = File(dir, VIDEO_NAME),
             bookmarks = readBookmarks(dir),
+            serves = readServes(dir),
         )
+    }
+
+    private fun readServes(dir: File): SessionServes? {
+        val file = File(dir, SERVES_NAME)
+        if (!file.exists()) return null
+        return runCatching { json.decodeFromString(SessionServes.serializer(), file.readText()) }
+            .onFailure { Log.w(TAG, "Unreadable serves in ${dir.name}", it) }
+            .getOrNull()
     }
 
     private fun readBookmarks(dir: File): List<Bookmark> {
@@ -153,5 +196,6 @@ class MatchStorage(private val context: Context) {
         const val VIDEO_NAME = "match.mp4"
         const val META_NAME = "session.json"
         const val BOOKMARKS_NAME = "bookmarks.jsonl"
+        const val SERVES_NAME = "serves.json"
     }
 }

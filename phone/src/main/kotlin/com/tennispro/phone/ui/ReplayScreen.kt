@@ -13,7 +13,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -35,6 +42,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,8 +59,9 @@ import com.tennispro.phone.calibration.CalibrationStorage
 import com.tennispro.phone.replay.VideoFrameSource
 import com.tennispro.phone.storage.MatchSession
 import com.tennispro.phone.storage.MatchStorage
-import com.tennispro.phone.vision.ServeAnalysisResult
-import com.tennispro.phone.vision.ServeAnalyzer
+import com.tennispro.phone.storage.SessionServes
+import com.tennispro.phone.vision.ServeScanService
+import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -76,8 +86,29 @@ fun ReplayScreen(
 ) {
     var sessions by remember { mutableStateOf<List<MatchSession>>(emptyList()) }
     var selected by remember { mutableStateOf<MatchSession?>(null) }
+    // Hoisted out of SessionReplay so it survives SessionReplay leaving
+    // composition while the full-screen calibration flow is up.
+    var positionMs by remember(selected) { mutableLongStateOf(0L) }
+    var calibrationFrame by remember { mutableStateOf<Bitmap?>(null) }
+    var calibrationVersion by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(Unit) { sessions = matchStorage.listSessions() }
+
+    val frameToCalibrate = calibrationFrame
+    if (frameToCalibrate != null) {
+        // Full screen, not under the Replay header: the first field test's
+        // complaint was a frame too small to place corners on.
+        CalibrationTapFlow(
+            bitmap = frameToCalibrate,
+            calibrationStorage = calibrationStorage,
+            onSaved = {
+                calibrationFrame = null
+                calibrationVersion++
+            },
+            onCancel = { calibrationFrame = null },
+        )
+        return
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -101,6 +132,10 @@ fun ReplayScreen(
                 session = session,
                 matchStorage = matchStorage,
                 calibrationStorage = calibrationStorage,
+                positionMs = positionMs,
+                onPositionChange = { positionMs = it },
+                calibrationVersion = calibrationVersion,
+                onCalibrate = { calibrationFrame = it },
             )
         }
     }
@@ -137,9 +172,13 @@ private fun SessionPicker(sessions: List<MatchSession>, onSelect: (MatchSession)
             ) {
                 Column(Modifier.padding(14.dp)) {
                     Text(session.meta.id, style = MaterialTheme.typography.titleSmall)
-                    session.meta.durationMs?.let {
+                    val details = listOfNotNull(
+                        session.meta.durationMs?.let { formatElapsed(it) },
+                        session.serves?.let { servesSummary(it) },
+                    )
+                    if (details.isNotEmpty()) {
                         Text(
-                            formatElapsed(it),
+                            details.joinToString(" · "),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -155,19 +194,21 @@ private fun SessionReplay(
     session: MatchSession,
     matchStorage: MatchStorage,
     calibrationStorage: CalibrationStorage,
+    positionMs: Long,
+    onPositionChange: (Long) -> Unit,
+    calibrationVersion: Int,
+    onCalibrate: (Bitmap) -> Unit,
 ) {
     val frameSource = remember(session) { runCatching { VideoFrameSource(matchStorage.videoFileFor(session)) }.getOrNull() }
     DisposableEffect(frameSource) { onDispose { frameSource?.close() } }
 
     var mode by remember { mutableStateOf(ReplayMode.SCRUB) }
-    var positionMs by remember(frameSource) { mutableStateOf(0L) }
     var frame by remember(frameSource) { mutableStateOf<Bitmap?>(null) }
-    var calibrating by remember { mutableStateOf(false) }
 
-    // Re-read on every calibrating -> not-calibrating transition, so saving a new
-    // calibration from this very screen (via "Calibrate from this frame" below)
-    // updates the overlay immediately rather than only after leaving and returning.
-    val calibration = remember(calibrating) { calibrationStorage.load() }
+    // Re-read whenever a calibration is saved, so saving one from this very
+    // screen (via "Calibrate from this frame" below) updates the overlay
+    // immediately rather than only after leaving and returning.
+    val calibration = remember(calibrationVersion) { calibrationStorage.load() }
     val homography = remember(calibration) { calibration?.let { Homography.fromCalibration(it) } }
     val courtWidthM = remember(calibration) {
         (calibration?.format?.let { CourtDimensions.widthFor(it) } ?: CourtDimensions.SINGLES_WIDTH_M).toFloat()
@@ -186,170 +227,169 @@ private fun SessionReplay(
     }
 
     val currentFrame = frame
-    if (calibrating && currentFrame != null) {
-        CalibrationTapFlow(
-            bitmap = currentFrame,
-            calibrationStorage = calibrationStorage,
-            onSaved = { calibrating = false },
-            onCancel = { calibrating = false },
-        )
-        return
-    }
 
-    Column(Modifier.fillMaxSize()) {
-        BookmarkAnalysisSection(session, matchStorage, calibrationStorage)
-
-        when (mode) {
-            ReplayMode.PLAY -> VideoPlayer(
-                videoFile = matchStorage.videoFileFor(session),
-                // Bottom padding, not just the mode-toggle row's top padding:
-                // without it the video area runs flush to the screen edge, so
-                // MediaController's floating play/pause/seek bar has nowhere to
-                // sit but on top of the video itself.
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(bottom = 42.dp),
-            )
-
-            ReplayMode.SCRUB -> {
-                Box(
-                    Modifier
+    // Video on the left at full height, everything else in a side panel: stacked
+    // vertically in landscape, the serve list squeezed the frame to nothing.
+    Row(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+        ) {
+            when (mode) {
+                ReplayMode.PLAY -> VideoPlayer(
+                    videoFile = matchStorage.videoFileFor(session),
+                    // Bottom padding: without it the video area runs flush to the
+                    // screen edge, so MediaController's floating play/pause/seek bar
+                    // has nowhere to sit but on top of the video itself.
+                    modifier = Modifier
                         .weight(1f)
-                        .fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (currentFrame != null) {
-                        CourtOverlayCanvas(
-                            bitmap = currentFrame,
-                            tappedPoints = emptyList(),
-                            homography = homography,
-                            courtWidthM = courtWidthM,
-                            onTap = {},
-                        )
-                    } else {
-                        CircularProgressIndicator()
-                    }
-                }
+                        .fillMaxWidth()
+                        .padding(bottom = 42.dp),
+                )
 
-                Column(Modifier.padding(16.dp)) {
-                    Slider(
-                        value = positionMs.toFloat(),
-                        onValueChange = { positionMs = it.toLong() },
-                        valueRange = 0f..frameSource.durationMs.toFloat().coerceAtLeast(1f),
-                    )
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                ReplayMode.SCRUB -> {
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Text(formatElapsed(positionMs), style = MaterialTheme.typography.bodySmall)
-                        Text(formatElapsed(frameSource.durationMs), style = MaterialTheme.typography.bodySmall)
+                        if (currentFrame != null) {
+                            CourtOverlayCanvas(
+                                bitmap = currentFrame,
+                                tappedPoints = emptyList(),
+                                homography = homography,
+                                courtWidthM = courtWidthM,
+                                onTap = {},
+                            )
+                        } else {
+                            CircularProgressIndicator()
+                        }
                     }
 
-                    Spacer(Modifier.height(8.dp))
-
-                    OutlinedButton(
-                        onClick = { calibrating = true },
-                        enabled = currentFrame != null,
-                    ) { Text("Calibrate from this frame") }
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        Slider(
+                            value = positionMs.toFloat(),
+                            onValueChange = { onPositionChange(it.toLong()) },
+                            valueRange = 0f..frameSource.durationMs.toFloat().coerceAtLeast(1f),
+                        )
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(formatElapsed(positionMs), style = MaterialTheme.typography.bodySmall)
+                            Text(formatElapsed(frameSource.durationMs), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             }
         }
 
-        Row(
-            Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Column(
+            Modifier
+                .width(REPLAY_PANEL_WIDTH)
+                .fillMaxHeight()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.End + WindowInsetsSides.Bottom))
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            ReplayModeChip("Scrub", selected = mode == ReplayMode.SCRUB) { mode = ReplayMode.SCRUB }
-            ReplayModeChip("Play", selected = mode == ReplayMode.PLAY) { mode = ReplayMode.PLAY }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ReplayModeChip("Scrub", selected = mode == ReplayMode.SCRUB) { mode = ReplayMode.SCRUB }
+                ReplayModeChip("Play", selected = mode == ReplayMode.PLAY) { mode = ReplayMode.PLAY }
+            }
+
+            ServesSection(session, matchStorage, onSeek = {
+                mode = ReplayMode.SCRUB
+                onPositionChange(it)
+            })
+
+            if (mode == ReplayMode.SCRUB) {
+                OutlinedButton(
+                    onClick = { currentFrame?.let(onCalibrate) },
+                    enabled = currentFrame != null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Calibrate from this frame") }
+            }
         }
     }
 }
 
+private val REPLAY_PANEL_WIDTH = 280.dp
+
 /**
- * Turns a marked moment into a serve speed estimate — see [ServeAnalyzer] for
- * the actual pipeline. One [ServeAnalyzer] per session visit: it holds the
- * loaded MediaPipe pose model, expensive enough to build that it should not
- * be recreated per button tap, released via [DisposableEffect] when this
- * leaves composition.
+ * The serves [com.tennispro.phone.vision.ServeScanner] found in this
+ * recording, with speeds, each one a shortcut to its moment in the scrubber.
+ * Scanning starts on its own when a recording finishes; "Find serves" is for
+ * recordings made before that, or a scan that didn't get to run.
  */
 @Composable
-private fun BookmarkAnalysisSection(
-    session: MatchSession,
-    matchStorage: MatchStorage,
-    calibrationStorage: CalibrationStorage,
-) {
-    if (session.bookmarks.isEmpty()) return
-
+private fun ServesSection(session: MatchSession, matchStorage: MatchStorage, onSeek: (Long) -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val analyzer = remember(calibrationStorage) { ServeAnalyzer(context, calibrationStorage) }
-    DisposableEffect(analyzer) { onDispose { analyzer.close() } }
+    val scanState by ServeScanService.state.collectAsState()
+    val scanning = scanState.isScanning(session.meta.id)
+    var serves by remember(session) { mutableStateOf(session.serves) }
 
-    var analyzingOffsetMs by remember { mutableStateOf<Long?>(null) }
-    var result by remember { mutableStateOf<ServeAnalysisResult?>(null) }
-
-    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Text("Analyze a marked moment as a serve", style = MaterialTheme.typography.labelLarge)
-        Spacer(Modifier.height(6.dp))
-
-        Row(
-            Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            session.bookmarks.forEach { bookmark ->
-                OutlinedButton(
-                    enabled = analyzingOffsetMs == null,
-                    onClick = {
-                        analyzingOffsetMs = bookmark.offsetMs
-                        result = null
-                        scope.launch {
-                            val outcome = withContext(Dispatchers.Default) {
-                                analyzer.analyze(session, matchStorage, bookmark.offsetMs)
-                            }
-                            result = outcome
-                            analyzingOffsetMs = null
-                        }
-                    },
-                ) { Text(formatElapsed(bookmark.offsetMs)) }
-            }
+    // Pick up the result file once this session's scan finishes.
+    LaunchedEffect(scanning) {
+        if (!scanning) {
+            serves = withContext(Dispatchers.IO) { matchStorage.findSession(session.meta.id)?.serves }
         }
+    }
 
-        if (analyzingOffsetMs != null) {
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+    Column {
+        val result = serves
+        when {
+            scanning -> Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
-                Text("Analyzing…", style = MaterialTheme.typography.bodySmall)
+                val percent = if (scanState.activeSessionId == session.meta.id) " ${(scanState.progress * 100).roundToInt()}%" else " (queued)"
+                Text("Finding serves…$percent", style = MaterialTheme.typography.bodySmall)
             }
-        }
 
-        result?.let { outcome ->
-            Spacer(Modifier.height(8.dp))
-            when (outcome) {
-                is ServeAnalysisResult.Success -> {
-                    val estimate = outcome.estimate
-                    Text(
-                        "~${estimate.kmh.roundToInt()} km/h ± ${estimate.errorBandPercent.roundToInt()}%",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        "Contact at ${formatElapsed(outcome.contactTimeMs)}" +
-                            (outcome.bounceTimeMs?.let { " · bounce at ${formatElapsed(it)}" } ?: ""),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+            result == null -> OutlinedButton(onClick = { ServeScanService.enqueue(context, session.meta.id) }) {
+                Text("Find serves")
+            }
+
+            else -> {
+                Text(servesSummary(result), style = MaterialTheme.typography.labelLarge)
+                result.error?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
-
-                is ServeAnalysisResult.Failure -> Text(
-                    outcome.reason,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
+                if (result.serves.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        result.serves.forEach { serve ->
+                            val label = when {
+                                serve.netFault -> "net"
+                                serve.speedKmh != null -> "${serve.speedKmh.roundToInt()} km/h" + if (serve.inServiceBox == false) " (out)" else ""
+                                else -> "serve"
+                            }
+                            // A moment before contact, so the scrubbed frame shows the swing.
+                            OutlinedButton(
+                                onClick = { onSeek((serve.contactMs - SEEK_LEAD_MS).coerceAtLeast(0)) },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("${formatElapsed(serve.contactMs)} · $label")
+                            }
+                        }
+                    }
+                }
+                TextButton(onClick = { ServeScanService.enqueue(context, session.meta.id) }) { Text("Scan again") }
             }
         }
     }
+}
+
+private const val SEEK_LEAD_MS = 300L
+
+private fun servesSummary(serves: SessionServes): String {
+    if (serves.error != null) return "Serve scan didn't run"
+    val count = serves.serves.size
+    if (count == 0) return "No serves found"
+    val fastest = serves.serves.mapNotNull { it.speedKmh }.maxOrNull()
+    return "$count serve${if (count == 1) "" else "s"}" + (fastest?.let { " · fastest ${it.roundToInt()} km/h" } ?: "")
 }
 
 @Composable

@@ -16,6 +16,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
+    <!-- Serve scanning after a recording: mediaProcessing on Android 15+, dataSync below. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
 
     <application
@@ -42,6 +46,11 @@
             android:name=".camera.RecordingService"
             android:exported="false"
             android:foregroundServiceType="camera|microphone" />
+
+        <service
+            android:name=".vision.ServeScanService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing|dataSync" />
 
         <!--
           Receives watch messages even when the phone UI is not running, so a score

@@ -81,7 +81,7 @@ fun CourtOverlayCanvas(
 }
 
 /** Outer court outline plus net and both service lines — enough to eyeball calibration by. */
-private fun courtOverlaySegments(courtWidthM: Float): List<Pair<CourtPoint, CourtPoint>> {
+internal fun courtOverlaySegments(courtWidthM: Float): List<Pair<CourtPoint, CourtPoint>> {
     val length = CourtDimensions.LENGTH_M.toFloat()
     val netY = length / 2f
     val nearServiceY = netY - CourtDimensions.SERVICE_LINE_FROM_NET_M.toFloat()
@@ -100,10 +100,10 @@ private fun courtOverlaySegments(courtWidthM: Float): List<Pair<CourtPoint, Cour
     )
 }
 
-private data class FitRect(val scale: Float, val offsetX: Float, val offsetY: Float)
+internal data class FitRect(val scale: Float, val offsetX: Float, val offsetY: Float)
 
 /** How a [srcW]x[srcH] image gets letterboxed ("fit center") into a [dstW]x[dstH] box. */
-private fun fitRect(srcW: Float, srcH: Float, dstW: Float, dstH: Float): FitRect {
+internal fun fitRect(srcW: Float, srcH: Float, dstW: Float, dstH: Float): FitRect {
     val scale = min(dstW / srcW, dstH / srcH)
     val drawnW = srcW * scale
     val drawnH = srcH * scale

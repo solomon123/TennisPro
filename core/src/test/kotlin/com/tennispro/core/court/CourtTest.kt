@@ -93,6 +93,43 @@ class CourtTest {
     }
 
     @Test
+    fun `scaledTo rescales corners onto a same-shaped frame`() {
+        val half = singles.scaledTo(960, 540)!!
+
+        assertEquals(960, half.frameWidth)
+        assertEquals(540, half.frameHeight)
+        assertPointEquals(PixelPoint(100f, 475f), half.nearLeft)
+        assertPointEquals(PixelPoint(600f, 200f), half.farRight)
+    }
+
+    @Test
+    fun `scaledTo refuses a frame of a different shape`() {
+        // The first field test's bug: corners saved on a letterboxed 2340x1080
+        // preview snapshot, applied to 1920x1080 video frames.
+        val fromPreviewSnapshot = singles.copy(frameWidth = 2340, frameHeight = 1080)
+        assertNull(fromPreviewSnapshot.scaledTo(1920, 1080))
+    }
+
+    @Test
+    fun `least-squares homography reproduces the exact one from consistent points`() {
+        val exact = Homography.fromCalibration(singles)!!
+        val pixels = ArrayList<Double>()
+        val courts = ArrayList<Double>()
+        for (px in listOf(300f, 800f, 1300f, 1650f)) {
+            for (py in listOf(450f, 650f, 900f)) {
+                val court = exact.mapToCourt(PixelPoint(px, py))
+                pixels += px.toDouble(); pixels += py.toDouble()
+                courts += court.xMeters.toDouble(); courts += court.yMeters.toDouble()
+            }
+        }
+
+        val fitted = solveHomographyLeastSquares(pixels.toDoubleArray(), courts.toDoubleArray())!!
+        val probe = PixelPoint(1000f, 700f)
+        val (x, y) = applyHomogeneous(fitted, probe.x.toDouble(), probe.y.toDouble())
+        assertPointEquals(exact.mapToCourt(probe), CourtPoint(x.toFloat(), y.toFloat()), tolerance = 0.001f)
+    }
+
+    @Test
     fun `calibration points round trip through the codec`() {
         val encoded = CalibrationCodec.encode(singles)
         assertEquals(singles, CalibrationCodec.decode(encoded))

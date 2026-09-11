@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
 import android.hardware.display.DisplayManager
 import android.os.Binder
 import android.os.Build
@@ -15,11 +16,14 @@ import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
 import android.util.Range
+import android.util.Size
 import android.view.Display
 import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.MirrorMode
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.FileOutputOptions
@@ -38,6 +42,7 @@ import com.tennispro.phone.R
 import com.tennispro.phone.storage.Bookmark
 import com.tennispro.phone.storage.MatchSession
 import com.tennispro.phone.storage.MatchStorage
+import com.tennispro.phone.vision.ServeScanService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -144,6 +149,35 @@ class RecordingService : LifecycleService() {
         preview?.setSurfaceProvider(null)
     }
 
+    /**
+     * Turns a `PreviewView.getBitmap()` snapshot into a frame in the recorded
+     * video's pixel space (see [PreviewFrames] for why the two differ), or
+     * null until the camera is bound.
+     */
+    fun previewSnapshotToVideoFrame(viewSnapshot: Bitmap): Bitmap? {
+        val info = preview?.resolutionInfo ?: return null
+        val crop = info.cropRect
+        val previewSize = if (info.rotationDegrees % 180 == 0) {
+            Size(crop.width(), crop.height())
+        } else {
+            Size(crop.height(), crop.width())
+        }
+        val recorded = videoCapture?.attachedSurfaceResolution ?: return null
+        // Same orientation as the preview as displayed; recordings carry no
+        // rotation hint in this app's landscape mount (checked via the mp4's tkhd matrix).
+        val videoSize = if ((recorded.width >= recorded.height) == (previewSize.width >= previewSize.height)) {
+            recorded
+        } else {
+            Size(recorded.height, recorded.width)
+        }
+        Log.i(
+            TAG,
+            "Preview snapshot ${viewSnapshot.width}x${viewSnapshot.height} (stream ${previewSize.width}x${previewSize.height}) " +
+                "-> video frame ${videoSize.width}x${videoSize.height}",
+        )
+        return PreviewFrames.toVideoFrame(viewSnapshot, previewSize, videoSize)
+    }
+
     // -------------------------------------------------------------- recording
 
     /**
@@ -213,7 +247,11 @@ class RecordingService : LifecycleService() {
                             lifecycleScope.launch(Dispatchers.IO) {
                                 runCatching { Mp4Rotation.stripVideoRotation(storage.videoFileFor(session)) }
                                     .onFailure { Log.w(TAG, "Could not fix front-camera recording rotation", it) }
+                                // Only once the file is final: the scan reads it frame by frame.
+                                ServeScanService.enqueue(this@RecordingService, session.meta.id)
                             }
+                        } else {
+                            ServeScanService.enqueue(this, session.meta.id)
                         }
                     }
 
@@ -337,6 +375,14 @@ class RecordingService : LifecycleService() {
         val previewRotation = if (facing == CameraFacing.FRONT) rotate180(baseRotation) else baseRotation
 
         val newPreview = Preview.Builder()
+            // 16:9 to match the FHD recording. CameraX defaults Preview to 4:3,
+            // which made the recording a vertical crop of what the preview (and
+            // so the live calibration freeze) showed — see PreviewFrames.
+            .setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                    .build(),
+            )
             .setTargetRotation(previewRotation)
             // Never mirror, front or back: the calibration UI taps court
             // corners on this surface, and a mirrored display would silently

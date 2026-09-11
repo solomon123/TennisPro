@@ -1,28 +1,34 @@
 package com.tennispro.phone.replay
 
+import android.graphics.Bitmap
 import android.media.Image
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.util.Log
+import android.util.Size
 import com.tennispro.core.vision.GrayscaleFrame
 import java.io.File
 
 /**
- * Decodes every frame in a short time window sequentially — fast, unlike
+ * Decodes a recorded session's frames sequentially — fast, unlike
  * [VideoFrameSource]'s `MediaMetadataRetriever.getFrameAtTime`, which
  * re-seeks from the nearest keyframe on *every* call: fine for one frame at
  * a time in a scrub UI, effectively O(n²) for n frames pulled in sequence.
- * Deferred from Phase 2 until a caller actually needed that throughput — see
- * docs/ARCHITECTURE.md's Calibration section — and Phase 3's ball tracker,
- * which needs every frame across a serve, is that caller.
  *
- * Decodes straight to grayscale, not full ARGB `Bitmap`s: the video track's
- * Y (luma) plane already *is* grayscale, so there is no RGB conversion to
- * pay for. The decoder is configured with **no output `Surface`**, reading
- * frames via [MediaCodec.getOutputImage] instead — deliberately not a
- * `Surface`-backed `ImageReader`, which was the first design here and hit a
- * confirmed, repeatable native crash on-device (`JNI DETECTED ERROR ...
+ * Two outputs, for the two passes of serve detection:
+ * - [decodeRange]: every frame in a window, full-resolution grayscale — the
+ *   video's Y (luma) plane already *is* grayscale, so there is no colour
+ *   conversion to pay for. For ball tracking.
+ * - [decodeSampledColor]: roughly one frame per interval across a long span,
+ *   half-resolution colour. For pose: MediaPipe on grayscale lost the server
+ *   for most of a serve on the 2026-09-08 footage, while half-resolution colour
+ *   matched full resolution (the model downsamples to 256 px anyway).
+ *
+ * The decoder is configured with **no output `Surface`**, reading frames via
+ * [MediaCodec.getOutputImage] instead — deliberately not a `Surface`-backed
+ * `ImageReader`, which was the first design here and hit a confirmed,
+ * repeatable native crash on-device (`JNI DETECTED ERROR ...
  * nativeCreatePlanes ... nullptr`): a hardware decoder can write to a
  * `Surface` in an opaque, GPU-private buffer format that `ImageReader`
  * cannot safely expose as CPU-readable `YUV_420_888` planes, even with the
@@ -32,6 +38,27 @@ import java.io.File
  */
 class FrameSequenceSource(private val videoFile: File) {
 
+    /** Duration and frame size from the container, or null if there is no readable video track. */
+    fun videoInfo(): VideoInfo? {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(videoFile.absolutePath)
+            val track = selectVideoTrack(extractor) ?: return null
+            val format = extractor.getTrackFormat(track)
+            VideoInfo(
+                durationMs = format.getLong(MediaFormat.KEY_DURATION) / 1_000,
+                size = Size(format.getInteger(MediaFormat.KEY_WIDTH), format.getInteger(MediaFormat.KEY_HEIGHT)),
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read video info for ${videoFile.name}", e)
+            null
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
+    data class VideoInfo(val durationMs: Long, val size: Size)
+
     /**
      * Calls [onFrame] once per decoded frame with a presentation timestamp in
      * `[startMs, endMs]`, in order. Frames before [startMs] are still
@@ -39,6 +66,43 @@ class FrameSequenceSource(private val videoFile: File) {
      * — but are not delivered to [onFrame].
      */
     fun decodeRange(startMs: Long, endMs: Long, onFrame: (timeMs: Long, frame: GrayscaleFrame) -> Unit) {
+        decode(startMs, endMs) { timeMs, image -> onFrame(timeMs, imageToGrayscale(image)) }
+    }
+
+    /**
+     * Calls [onFrame] with the first frame at or after each multiple of
+     * [intervalMs] in `[startMs, endMs]`, as a half-resolution ARGB bitmap.
+     *
+     * The bitmap is **reused between calls** — copy it to keep it. Decoding
+     * still visits every frame (H.264 can't skip); only the colour conversion
+     * is limited to the sampled ones, which is where the cost is.
+     */
+    fun decodeSampledColor(
+        startMs: Long,
+        endMs: Long,
+        intervalMs: Long,
+        onFrame: (timeMs: Long, frame: Bitmap) -> Unit,
+    ) {
+        var nextSampleMs = startMs
+        var bitmap: Bitmap? = null
+        var pixels = IntArray(0)
+        decode(startMs, endMs) { timeMs, image ->
+            if (timeMs < nextSampleMs) return@decode
+            val width = image.width / 2
+            val height = image.height / 2
+            val target = bitmap?.takeIf { it.width == width && it.height == height }
+                ?: Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
+                    bitmap = it
+                    pixels = IntArray(width * height)
+                }
+            imageToHalfArgb(image, pixels, width, height)
+            target.setPixels(pixels, 0, width, 0, 0, width, height)
+            onFrame(timeMs, target)
+            while (nextSampleMs <= timeMs) nextSampleMs += intervalMs
+        }
+    }
+
+    private fun decode(startMs: Long, endMs: Long, onImage: (timeMs: Long, image: Image) -> Unit) {
         require(endMs > startMs) { "endMs ($endMs) must be after startMs ($startMs)" }
 
         val extractor = MediaExtractor()
@@ -65,7 +129,7 @@ class FrameSequenceSource(private val videoFile: File) {
             mediaCodec.configure(format, null, null, 0)
             mediaCodec.start()
 
-            runDecodeLoop(extractor, mediaCodec, startMs * 1_000L, endMs * 1_000L, onFrame)
+            runDecodeLoop(extractor, mediaCodec, startMs * 1_000L, endMs * 1_000L, onImage)
         } finally {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
@@ -78,7 +142,7 @@ class FrameSequenceSource(private val videoFile: File) {
         codec: MediaCodec,
         startUs: Long,
         endUs: Long,
-        onFrame: (timeMs: Long, frame: GrayscaleFrame) -> Unit,
+        onImage: (timeMs: Long, image: Image) -> Unit,
     ) {
         val bufferInfo = MediaCodec.BufferInfo()
         var inputDone = false
@@ -123,8 +187,11 @@ class FrameSequenceSource(private val videoFile: File) {
                 if (inWindow) {
                     val image = codec.getOutputImage(outputIndex)
                     if (image != null) {
-                        onFrame(presentationUs / 1_000, imageToGrayscale(image))
-                        image.close()
+                        try {
+                            onImage(presentationUs / 1_000, image)
+                        } finally {
+                            image.close()
+                        }
                     }
                 }
                 codec.releaseOutputBuffer(outputIndex, false)
@@ -165,6 +232,35 @@ class FrameSequenceSource(private val videoFile: File) {
             }
         }
         return GrayscaleFrame(width, height, pixels)
+    }
+
+    /**
+     * YUV_420_888 to ARGB at half resolution: every other luma sample, and the
+     * chroma planes at their native (already half) resolution, so no chroma
+     * interpolation is needed. BT.601 limited-range coefficients in 10-bit
+     * fixed point.
+     */
+    private fun imageToHalfArgb(image: Image, out: IntArray, width: Int, height: Int) {
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+        val yBuffer = yPlane.buffer
+        val uBuffer = uPlane.buffer
+        val vBuffer = vPlane.buffer
+        for (oy in 0 until height) {
+            val yRow = 2 * oy * yPlane.rowStride
+            val uRow = oy * uPlane.rowStride
+            val vRow = oy * vPlane.rowStride
+            for (ox in 0 until width) {
+                val luma = ((yBuffer.get(yRow + 2 * ox * yPlane.pixelStride).toInt() and 0xFF) - 16).coerceAtLeast(0) * 1192
+                val u = (uBuffer.get(uRow + ox * uPlane.pixelStride).toInt() and 0xFF) - 128
+                val v = (vBuffer.get(vRow + ox * vPlane.pixelStride).toInt() and 0xFF) - 128
+                val r = ((luma + 1634 * v) shr 10).coerceIn(0, 255)
+                val g = ((luma - 833 * v - 400 * u) shr 10).coerceIn(0, 255)
+                val b = ((luma + 2066 * u) shr 10).coerceIn(0, 255)
+                out[oy * width + ox] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
     }
 
     private fun selectVideoTrack(extractor: MediaExtractor): Int? {

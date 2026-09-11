@@ -108,7 +108,10 @@ fun RecordScreen(
     // line re-detection.
     LaunchedEffect(state is CaptureState.Ready, previewView) {
         if (state is CaptureState.Ready) {
-            previewView?.bitmap?.let { frame -> driftStatus = driftDetector.check(frame) }
+            // In video pixel space, like the calibration reference frame it's compared against.
+            previewView?.bitmap
+                ?.let { snapshot -> service?.previewSnapshotToVideoFrame(snapshot) }
+                ?.let { frame -> driftStatus = driftDetector.check(frame) }
         }
     }
 

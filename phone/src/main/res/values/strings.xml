@@ -3,4 +3,8 @@
     <string name="app_name">TennisPro</string>
     <string name="recording_channel_name">Match recording</string>
     <string name="recording_channel_description">Shown while a match is being recorded.</string>
+    <string name="serve_scan_channel_name">Finding serves</string>
+    <string name="serve_scan_channel_description">Shown while a recording is scanned for serves and their speeds.</string>
+    <string name="serve_scan_title">Finding serves</string>
+    <string name="serve_scan_starting">Starting…</string>
 </resources>

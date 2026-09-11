@@ -27,54 +27,53 @@ data class GrayscaleFrame(val width: Int, val height: Int, val pixels: IntArray)
     }
 }
 
-/** One plausible ball position in a single frame, before any temporal tracking. */
+/** One plausible ball position in a single frame, before any tracking across frames. */
 data class BallCandidate(val x: Double, val y: Double, val pixelCount: Int)
 
-/**
- * Classical-CV ball detection: frame differencing, not a trained model.
- *
- * Per docs/ACCURACY.md: the camera is fixed and the background static, which
- * background/frame differencing exploits directly — no training data needed,
- * an order of magnitude cheaper than a network. A TFLite heatmap model is the
- * documented fallback if this proves insufficient, not the starting point.
- *
- * A tennis ball at range is small (ACCURACY.md: "6-15 px") and, moving fast,
- * motion-blurs into a streak rather than staying compact — [maxDimension]
- * exists specifically to still accept an elongated blob, not just a round one.
- */
-object BallDetector {
+/** An axis-aligned pixel rectangle, edges inclusive. */
+data class PixelRect(val left: Double, val top: Double, val right: Double, val bottom: Double) {
+    fun contains(x: Double, y: Double): Boolean = x in left..right && y in top..bottom
+}
 
-    /**
-     * Candidate ball positions in [curr], found by differencing it against
-     * [prev]. Returns every plausible blob, not just one — [threshold],
-     * [minPixels]/[maxPixels], and [maxDimension] are the only filtering;
-     * picking the single most likely candidate per frame is a temporal
-     * decision (informed by where a tracker expects the ball to be), made by
-     * the caller, not here.
-     */
-    fun detect(
+/**
+ * Classical-CV ball candidates: three-frame differencing, not a trained model
+ * (see docs/ACCURACY.md's "classical CV first" plan).
+ *
+ * A pixel counts as moving only if it differs from *both* the previous and the
+ * next frame. The first cut (Phase 3's two-frame `BallDetector`) differenced
+ * consecutive frames only, which marks the ball twice — where it was and where
+ * it is — and on the first real-court footage (2026-09-08) produced 100-480
+ * blobs a frame, mostly the server's own body. Requiring both differences
+ * leaves just the ball's current position, and [exclude] lets the caller mask
+ * the server's body out entirely, since pose already knows where it is.
+ *
+ * Every plausible blob is returned; which one is the ball is decided across
+ * frames by [ServeFlight], not here.
+ */
+object MotionBlobs {
+
+    fun find(
         prev: GrayscaleFrame,
         curr: GrayscaleFrame,
-        threshold: Int = 25,
+        next: GrayscaleFrame,
+        threshold: Int = 20,
         minPixels: Int = 3,
-        maxPixels: Int = 600,
-        maxDimension: Int = 60,
+        maxPixels: Int = 150,
+        maxDimension: Int = 30,
+        exclude: PixelRect? = null,
     ): List<BallCandidate> {
-        require(prev.width == curr.width && prev.height == curr.height) {
+        require(prev.width == curr.width && curr.width == next.width && prev.height == curr.height && curr.height == next.height) {
             "Frames must be the same size to difference them"
         }
-        val mask = differenceMask(prev, curr, threshold)
+        val mask = BooleanArray(curr.pixels.size)
+        for (i in mask.indices) {
+            val c = curr.pixels[i]
+            mask[i] = abs(c - prev.pixels[i]) > threshold && abs(next.pixels[i] - c) > threshold
+        }
         return findBlobs(mask, curr.width, curr.height)
             .filter { it.pixelCount in minPixels..maxPixels && it.width <= maxDimension && it.height <= maxDimension }
             .map { BallCandidate(it.centroidX, it.centroidY, it.pixelCount) }
-    }
-
-    private fun differenceMask(prev: GrayscaleFrame, curr: GrayscaleFrame, threshold: Int): BooleanArray {
-        val mask = BooleanArray(curr.pixels.size)
-        for (i in mask.indices) {
-            mask[i] = abs(prev.pixels[i] - curr.pixels[i]) >= threshold
-        }
-        return mask
+            .filterNot { exclude != null && exclude.contains(it.x, it.y) }
     }
 
     private class Blob(var minX: Int, var minY: Int, var maxX: Int, var maxY: Int, var pixelCount: Int, var sumX: Long, var sumY: Long) {

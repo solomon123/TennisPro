@@ -123,6 +123,56 @@ per-recording — mirrors `ScoreStorage`'s reasoning: one camera stays mounted i
 one spot across many recordings (see the README's Setup section), so
 calibration is a property of the mount, not of any one session.
 
+### Calibration lives in the recording's pixel space
+
+Found in the first real-court test (Galaxy S25 Ultra, 2026-09-08): a live
+"Freeze frame" calibration was saved in the wrong coordinate space, twice
+over. `PreviewView.getBitmap()` is the whole *view* — 2340x1080 with
+FIT_CENTER's letterbox bars baked in — and CameraX's default `Preview` stream
+was 4:3 while the FHD recording is 16:9, so the recording is a vertical crop
+of what the preview showed (the near baseline sat at 84% of the preview's
+height but 95% of the video's). Every tapped corner landed somewhere else on
+the frames the serve analysis measured, and nothing failed loudly.
+
+The fix has three parts: `Preview` now asks for 16:9 like the recording;
+`PreviewFrames` converts a snapshot into the recorded video's pixel space
+(computed from the real stream sizes, not assumed, since CameraX may fall
+back to another aspect ratio) before anything is tapped on it — the drift
+check's live frame too, so it compares like with like; and
+`CalibrationPoints.scaledTo` refuses to rescale a calibration onto a frame of
+a different shape rather than silently applying it.
+
+### Finding the court automatically
+
+The same test's first feedback was that the frozen frame was too small to tap
+corners on. The frame now fills the screen beside a narrow control panel, with
+pinch-zoom, a magnifier loupe while placing or dragging a corner, and live
+grid re-projection while dragging (`CalibrationCanvas`). But first,
+`core/vision/CourtLineDetector` usually finds the court on its own: a
+"brighter than both sides" line-pixel test, a Hough transform with vote
+removal, then every pairing of detected lines against the real court model
+scored by how many of the model's line samples land on line pixels, refined at
+full resolution by fitting each line's brightness ridge. Lessons from the real
+frames, each now a comment where it applies:
+
+- Score each image pixel once. Uniform court-space samples let a hypothesis
+  squeezed toward the vanishing point count every collapsed sample as a hit.
+- Refine the best few hypotheses, then choose. A fit built from the service
+  line and far baseline out-scored the right one by 421 to 419 before
+  refinement, with its near baseline 45 px off.
+- Choose refined fits by the detected lines they explain, not the pixel score
+  alone. With a player standing on the near baseline, a fit that pushed that
+  baseline off-frame dodged the misses the player's body caused — and left the
+  strongest painted line in the image unexplained.
+- Find each line's centre from its two half-height edges against *each side's*
+  background. A single threshold drifted ~2 px toward sunlit green, moving a
+  corner ~3 px along the sideline.
+- Report corners where the painted lines cross, not from the least-squares
+  homography, which spreads lens distortion across the court: the user checks
+  corners against the paint.
+- From a low mount the net tape can sit almost on the far baseline; far
+  corners are the least certain part of any calibration from there.
+
 **Drift detection is a first cut, not real detection.** `frameDifference` is a
 mean-absolute-difference over a small downscaled grayscale grid, compared
 against a saved reference frame. It is not line/edge-based re-detection —
@@ -203,56 +253,115 @@ high-speed modes are resolution-capped and inconsistently exposed. Reaching 120 
 will likely need Camera2 interop, and that work belongs in Phase 3 where the frame
 rate actually pays for itself. The `tryBind` fallback structure is where it slots in.
 
-## Serve speed
+## Serve detection and speed
 
-`core/vision/` follows the same "hand-rolled, pure, unit-tested" style as
-scoring and calibration — no OpenCV, no trained model, per the decisions
-made going into Phase 3 (see `docs/ACCURACY.md`'s "classical CV first" plan).
-The pipeline, end to end:
+Serves are found and measured with no marking by the user — the second
+field-test request (2026-09-10): nobody can touch the phone mid-match.
+`phone/vision/ServeScanner` does the work; `ServeScanService` runs it in the
+background as soon as `RecordingService` finalizes a recording (a foreground
+service, type `mediaProcessing` on Android 15+ and `dataSync` below, since a
+long match takes minutes to scan), and Replay's **Find serves** runs it for
+older recordings. Results are written to `serves.json` beside the video and
+shown in Replay as one chip per serve.
 
-1. **A rough window.** The user drops a bookmark near the serve (the
-   existing bookmark feature, unchanged); analysis searches
-   `[bookmark - 1s, bookmark + 3s]`.
-2. **`PoseSwingWindow` narrows that window** using MediaPipe Tasks'
-   `PoseLandmarker` (`RunningMode.VIDEO`), tracking the right-wrist landmark's
-   vertical motion to find roughly when the swing happens, ±700ms. This is
-   deliberately **not** used to pinpoint the contact frame — a body-joint
-   pose model has no way to know the exact instant of racket-ball contact.
-   Its only job is making sure the ball tracker isn't searching a whole
-   multi-second window blindly, which might contain other motion (a
-   returning opponent, a ball boy). If pose detection is unavailable or
-   inconclusive, it falls back to the unnarrowed window rather than failing.
-3. **`BallDetector` finds ball candidates per frame**: consecutive-frame
-   differencing on the grayscale Y-plane, thresholded, connected-component
-   blob labeling, filtered by plausible size.
-4. **`KalmanTracker2D`** (a hand-rolled constant-velocity 2D filter) tracks
-   the ball across frames, predicting through missed detections and gating
-   which candidate to accept each frame by distance from the prediction.
-5. **`Trajectory.findContactIndex`** finds the contact frame as the sharpest
-   frame-to-frame speed increase in the tracked path — the toss's
-   near-stationary apex giving way to the racket's acceleration — rather
-   than trusting the pose window to be frame-precise, which it isn't.
-   **`Trajectory.findBounceIndex`** finds the bounce the same way Phase 4's
-   line-calling will need to: the trajectory vertex, where vertical image
-   motion reverses. Written once here, reusable there.
-6. **`ServeSpeed.estimate`** converts the pixel displacement between
-   post-contact frames into meters using the *local scale* of Phase 2's
-   `Homography` — a finite-difference Jacobian at the ball's image position,
-   not a direct `mapToCourt` of an above-ground point, which would place the
-   ball at a nonsensical on-court coordinate. Divides by elapsed frame time
-   to get speed, and always returns an **error band** alongside it
-   (`100 / frames-of-baseline-lock + 8`, an 8% floor that is never claimed
-   to be beaten) — never a bare number, per `docs/ACCURACY.md`.
+### Why Phase 3's pipeline was replaced, not tuned
 
-**Calibration must be against the real scene the camera is pointed at.**
-The homography measures real-world distance across whatever plane was
-tapped during calibration — if that plane is a TV playing a broadcast match
-rather than the actual court, the pipeline still runs and still reports a
-number with an error band, but the number is meaningless: it has no
-geometric relationship to the broadcast camera's own separate filming of
-the match. This is exactly what happened testing this phase indoors (see
-below) — worth remembering before treating any indoor/screen test as an
-accuracy signal.
+Phase 3 analyzed a bookmarked moment: two-frame differencing for ball
+candidates, a constant-velocity Kalman tracker started on the largest blob,
+contact at the sharpest speed jump, and speed from pixel displacement scaled
+by the ground-plane homography's local Jacobian. The first real-court footage
+(2026-09-08, four recordings) broke every stage:
+
+- Two-frame differencing marks the ball twice and the whole moving server
+  besides — 100-480 blobs a frame. The tracker started on the server's body
+  and never left it.
+- The ground-plane Jacobian has no geometric meaning for a ball 2.6 m in the
+  air.
+- Two serves read **58 and 10 km/h**; the analysis below puts them near
+  150 km/h.
+- None of the four recordings had a single bookmark, because the user couldn't
+  make one while playing — the actual feedback.
+
+The replacement was prototyped in Python/OpenCV against those recordings
+(frames, pose, and hand-checked serve times), then ported to `:core`.
+
+### The pipeline
+
+1. **Court, per recording and per serve.** `CourtLineDetector` on a frame of
+   the recording itself, and again at each serve: the phone moved twice inside
+   one 2026-09-08 recording. The saved calibration is only a fallback.
+2. **Pose proposes.** MediaPipe Pose (lite, `RunningMode.VIDEO`, up to 3
+   people) on ~10 frames a second across the whole recording, on
+   half-resolution *colour* frames from `FrameSequenceSource.decodeSampledColor`
+   — on grayscale the model lost the server for most of each serve.
+   `ServeProposals` then looks for a serve's shape, and each rule is there
+   because a looser version fired on something real:
+   - feet on the court foreground at or behind the near baseline (MediaPipe
+     hallucinated poses in the trees above the court);
+   - back to the camera before the toss (someone walking toward the camera
+     with an arm raised);
+   - one wrist above the head for 3+ samples, *then* the other (a
+     groundstroke follow-through raises one arm);
+   - feet still from the toss until the racket rises — only until then, since
+     a server moves off straight after, and measuring stillness over the whole
+     window lost a real serve.
+3. **The ball flight confirms.** Every frame from 0.7 s before the racket
+   rises to 2 s after, full-resolution grayscale, through `MotionBlobs`: a
+   pixel counts as moving only if it differs from *both* neighbouring frames,
+   which leaves just the ball's current position, and the server's body (from
+   pose) is masked out. `ServeFlight` then chains candidates frame to frame
+   and judges every chain on the full measurement it would produce:
+   - **A serve needs a toss** — a short track falling nearly straight down
+     above the head just before the flight — and a flight that starts above
+     the head. Pose alone proposed groundstrokes and overheads on a rally
+     recording.
+   - **Contact** is midway between the toss's last visible frame and the
+     flight's first point; the racket hides the ball in between.
+   - **The bounce** is the sharpest kink in on-screen vertical motion from the
+     track's lowest on-screen point onward. Not the low point itself: seen
+     from behind, a ball flying away climbs the screen through perspective
+     faster than it falls, so its on-screen low point comes before it lands
+     (a simulated 162 km/h serve read 183). Not the sharpest kink anywhere:
+     near the camera, perspective alone kinks a real track more than the
+     bounce does far down the court.
+   - **A net fault** is a track whose bounce lands at the net or on the
+     server's side of it — confirmed frame by frame on one real serve, where
+     the ball rolled back toward the camera. No speed is claimed for it.
+   - The winner is the best *complete* chain — a plausible measured serve,
+     then a net fault, then length. Longest-chain-wins alone picked the slow
+     player on the next court, the rising toss, and a short junk track that
+     happened to end in the service box.
+4. **Speed from contact to bounce.** The bounce point is on the ground, so the
+   homography places it exactly; the flight time comes from frame timestamps;
+   contact is taken as 2.6 m above a point 0.4 m in front of the server's
+   feet. Straight distance over time is the average speed, and the quadratic
+   drag equation (`s = ln(1 + k v0 t) / k`, k = 0.0202 /m for a tennis ball)
+   turns that into the launch speed a radar gun reports. A full 3D fit of the
+   flight was tried first and rejected: it needs the camera's focal length,
+   and plausible estimates (the device's lens calibration scaled to the video
+   crop, and two homography-based estimates: 1318-1606 px) moved the answer
+   by ~20%. The error band is ±1 frame at each end of the flight plus fixed
+   allowances for contact position, bounce position, and drag, in quadrature
+   — about ±7-9% at 60 fps.
+
+### How it was checked
+
+- **Synthetic, in `:core:test`.** `ServeFlightTest` simulates serves in 3D
+  (gravity, drag, a bounce) through a camera consistent with the real
+  2026-09-08 calibration, adds random and static clutter, and recovers
+  162 km/h and 108 km/h launches within 6%, a net fault, and nothing from
+  clutter alone. `ServeProposalsTest` covers each pose rule above.
+- **Real footage, off-device.** Pose and blob dumps from the four 2026-09-08
+  recordings through the Kotlin pipeline: 13 of the 14 serves counted by eye
+  were found — 8 measured at 132-166 km/h and 5 net faults — with 2 false
+  detections in the 10-minute rally recording (most likely overheads, where a
+  falling ball above the head looks like a toss). There is no radar reference
+  yet: the speeds are plausible, not verified.
+- **On-device** (Galaxy S25 Ultra): the 57 s `18-10-14` recording scanned in
+  85 s — ~70 s of pose, ~8 s per proposed serve — finding both serves at 147
+  and 153 km/h, within 3% of the off-device run on the same footage (on-device
+  pose put racket-up up to half a second differently; contact and bounce
+  landed within 15 ms). See the README's "Verifying Phase 3".
 
 ### `FrameSequenceSource`: why it doesn't use `ImageReader`
 
@@ -285,21 +394,30 @@ twice in Phase 2, applied here to a new API surface (`MediaCodec`'s
 image-output path, and separately MediaPipe Tasks) before spending an
 on-device iteration on it.
 
+Serve detection added a second output: `decodeSampledColor`, roughly one
+frame per interval as a half-resolution ARGB bitmap for pose. Decoding still
+visits every frame (H.264 can't skip), but only sampled frames pay for the
+YUV-to-RGB conversion, done straight from the chroma planes at their native
+half resolution.
+
 ## Deliberately deferred
 
 - **Real-time inference during capture.** Serve speed is computed from the buffered
   clip a second or two after contact; nobody needs it inside 100 ms, and running
   inference alongside high-frame-rate capture will thermally throttle a phone
   inside a set. Only line calling genuinely needs low latency.
-- **Real line/edge-based drift re-detection.** Phase 2's drift check is a rough
-  pixel-difference heuristic (see the Calibration section above) — Phase 3
-  added the classical-CV building blocks (`BallDetector`'s frame differencing
-  and blob labeling) this would reuse, but the drift check itself hasn't
-  been upgraded to use them yet.
-- **A constant-acceleration/gravity-aware trajectory model.** `KalmanTracker2D`
-  is constant-velocity, a first cut in the same spirit as `wear/Haptics.kt`'s
-  waveforms. Worth revisiting if tracking quality against real-court footage
-  proves it insufficient.
+- **Real line-based drift re-detection.** The drift check is still the rough
+  pixel-difference heuristic (see Calibration above). `CourtLineDetector` now
+  exists and could replace it outright — re-detect the court and compare
+  corners — but hasn't been wired in yet.
+- **Serve detection's known gaps.** Overheads can pass for serves (2 false
+  detections in 10 minutes of rallying). Only the player at the camera's end
+  is measured: the far server is too small for pose and serves toward the
+  camera. The pose pass runs at roughly real time on a Galaxy S25 Ultra's CPU,
+  so a two-hour match takes about as long to scan; MediaPipe's GPU delegate or
+  a lower pose rate for long recordings are the obvious levers.
+- **120/240 fps.** The single biggest lever on serve-speed error (see
+  Frame rate above), still unreachable through CameraX's video path.
 - **Gesture arbitration between recording and scoring.** `RecordScreen`'s
   bookmark long-press and `MatchController`'s undo long-press listen to the
   same `WearEventBus` independently. Scoring and recording at once means one

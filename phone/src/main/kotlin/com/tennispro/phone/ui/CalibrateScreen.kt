@@ -60,17 +60,37 @@ fun CalibrateScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    "Mount the phone where it will stay for the match and frame the whole " +
-                        "court, then freeze a frame to mark the corners.",
+                    "Mount the phone where it will stay for the match, with both baselines and " +
+                        "both sidelines in view, then freeze a frame. The app looks for the court " +
+                        "lines itself; you check and fine-tune.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.White,
                 )
                 Spacer(Modifier.height(12.dp))
-                Button(onClick = { previewView?.bitmap?.let { frozenFrame = it } }) {
+                Button(
+                    onClick = {
+                        // Converted to the recording's own pixel space before anything
+                        // is tapped on it — see PreviewFrames.
+                        previewView?.bitmap
+                            ?.let { snapshot -> service?.previewSnapshotToVideoFrame(snapshot) }
+                            ?.let { frozenFrame = it }
+                    },
+                ) {
                     Text("Freeze frame")
                 }
             }
+
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                TextButton(onClick = onBack) { Text("< Back") }
+            }
         } else {
+            // No Back overlay here: the tap flow has its own Cancel, and the
+            // frame needs every pixel of the screen it can get.
             CalibrationTapFlow(
                 bitmap = frame,
                 calibrationStorage = calibrationStorage,
@@ -80,15 +100,6 @@ fun CalibrateScreen(
                 },
                 onCancel = { frozenFrame = null },
             )
-        }
-
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            TextButton(onClick = onBack) { Text("< Back") }
         }
 
         if (savedNotice) {

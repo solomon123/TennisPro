@@ -111,12 +111,13 @@ Homography math (corner round-trip, inverse, degenerate-input rejection) and the
 drift-difference math are covered by `:core:test`'s `CourtTest`. Confirmed on a
 Galaxy S25 Ultra, back and front camera both:
 
-1. Mount the phone per the Setup section above. Open **Calibrate court**, hit
-   **Freeze frame**, and tap the four baseline corners in order (near-left,
-   near-right, far-left, far-right). The projected cyan grid — outer court,
-   net, both service lines — should overlay the real lines closely. If it
-   doesn't, **Retap**; if the four taps were too close together or nearly in a
-   line, the app says so rather than saving a bad calibration.
+1. Mount the phone per the Setup section above. Open **Calibrate court** and
+   hit **Freeze frame**. The app looks for the court lines itself and places
+   the four corners; the projected blue grid — outer court, net, both service
+   lines — should sit on the painted lines. Pinch to zoom; drag a corner to
+   adjust (a magnifier shows exactly where it lands). If the lines weren't
+   found, tap the corners in order (near-left, near-right, far-left,
+   far-right). Degenerate corners are refused rather than saved.
 2. **Save**, then check Home shows **Calibrated**.
 3. **Record a match**, and confirm no "Camera may have moved" chip appears
    (the mount hasn't moved since calibrating).
@@ -140,38 +141,39 @@ Galaxy S25 Ultra, back and front camera both:
 
 ## Verifying Phase 3
 
-`:core:test` covers the pipeline's pure math with synthetic data:
-`BallDetectorTest` (frame differencing + blob labeling on synthetic moving
-blobs), `KalmanTracker2DTest` (known trajectory plus injected noise/dropouts),
-`TrajectoryTest` (synthetic contact/vertex cases), `ServeSpeedTest` (known
-homography plus synthetic trajectory against expected speed and error band).
+Phase 3 now finds and measures serves automatically — see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)'s "Serve detection and speed" for
+the pipeline and why the first, bookmark-driven version was replaced after the
+first real-court test.
 
-What's confirmed on a Galaxy S25 Ultra:
+`:core:test` covers it with synthetic data: `MotionBlobsTest` (three-frame
+differencing), `ServeProposalsTest` (each pose rule, including the look-alikes
+it rejects), `ServeFlightTest` (serves simulated in 3D with gravity and drag
+through a camera matching a real calibration: launch speed recovered within
+6%, net faults, clutter), and `CourtLineDetectorTest` (a synthetic court plus a
+real 2026-09-08 frame).
 
-1. Record a clip, mark a bookmark near a serve, open **Replay**, tap the
-   bookmark chip's **Analyze serve** action. The pipeline runs
-   (`PoseSwingWindow` → `BallDetector` → `KalmanTracker2D` → `Trajectory` →
-   `ServeSpeed`) end to end without crashing, and reports a speed with an
-   error band (`~13 km/h ± 18%` on the first successful run) rather than
-   hanging or silently failing.
+Confirmed on a Galaxy S25 Ultra:
 
-What's **not yet verified — accuracy against a real serve**:
+1. Replay → a recording made before automatic scanning → **Find serves**
+   starts a background scan with a progress notification, and Replay shows
+   the result: on the 57 s `2026-09-08T18-10-14` recording, both serves
+   (147 and 153 km/h, ±7-8%) in 85 s. Each chip jumps the scrubber to its
+   serve.
+2. Off-device, the same pipeline on all four 2026-09-08 recordings found 13
+   of the 14 serves counted by eye (8 measured at 132-166 km/h, 5 net
+   faults), with 2 false detections in 10 minutes of rallying.
 
-2. The first on-device run above was filmed indoors, pointed at a TV playing
-   a broadcast match — useful for confirming the pipeline runs end to end,
-   but not a valid accuracy test: calibration measures real-world distance
-   across whatever plane the four corners were tapped on, and a TV screen has
-   no geometric relationship to the broadcast camera's own separate filming
-   of the match (see [ARCHITECTURE.md](docs/ARCHITECTURE.md#serve-speed)).
-   That run's ±18% band (implying a healthy ~10-frame tracking lock) is a
-   good sign for tracking quality, but the reported speed itself is
-   meaningless.
-3. Still needed: mount the phone per the Setup section on a real court,
-   calibrate against the real court lines, record a real serve, and check
-   the reported speed against plausibility (club-level serves land roughly
-   120-180 km/h) or a radar gun if one's available. Also confirm the
-   bounce-vertex timestamp lines up with where the ball visibly lands when
-   scrubbing that frame in Replay.
+Not yet verified:
+
+3. **Accuracy against a radar gun.** The speeds are plausible for a club
+   first serve and consistent between serves, but nothing has measured the
+   same serves independently.
+4. **The automatic start after recording.** Record a short clip with a few
+   serves, stop, and confirm the "Finding serves" notification appears and
+   Replay lists the serves when it finishes.
+5. **A long recording.** The pose pass runs at about real time on this phone,
+   so check a full match scans to completion in the background.
 
 ## Where this is going
 
