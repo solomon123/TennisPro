@@ -135,7 +135,7 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
 
                 else -> {
                     Text(
-                        text = "TennisPro",
+                        text = "TennisReplay",
                         fontSize = 20.sp,
                         fontWeight = FontWeight.SemiBold,
                     )

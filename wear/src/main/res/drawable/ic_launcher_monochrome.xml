@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- A tennis ball inside a replay arrow. Everything stays within the 33-unit safe-zone radius. -->
+<!-- Themed-icon layer: only alpha counts, so the ball is an outline instead of a fill with dark seams. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
@@ -18,15 +18,17 @@
         android:strokeLineJoin="round"
         android:pathData="M40.8,30.94 L48.36,21.99 L50.96,36.77 Z" />
     <path
-        android:fillColor="#D8F544"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.7"
+        android:fillColor="#00000000"
         android:pathData="M38,54 A16,16 0 1,0 70,54 A16,16 0 1,0 38,54 Z" />
     <path
-        android:strokeColor="#1B4332"
+        android:strokeColor="#FFFFFF"
         android:strokeWidth="2.2"
         android:fillColor="#00000000"
         android:pathData="M42.55,42.83 A16.8,16.8 0 0,1 42.55,65.17" />
     <path
-        android:strokeColor="#1B4332"
+        android:strokeColor="#FFFFFF"
         android:strokeWidth="2.2"
         android:fillColor="#00000000"
         android:pathData="M65.45,42.83 A16.8,16.8 0 0,0 65.45,65.17" />

@@ -1,4 +1,4 @@
-# TennisPro
+# TennisReplay
 
 Turns a phone camera and a Galaxy Watch into a tennis match assistant: records the
 match, scores it from your wrist, and — in later phases — estimates serve speed

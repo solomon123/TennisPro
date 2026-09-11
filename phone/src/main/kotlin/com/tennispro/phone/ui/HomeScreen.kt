@@ -117,7 +117,7 @@ fun HomeScreen(
                 .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 20.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("TennisPro", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
+                Text("TennisReplay", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
                 Box {
                     TextButton(onClick = { menuOpen = true }) { Text("⋮", fontSize = 24.sp) }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {

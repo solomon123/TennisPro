@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">TennisPro</string>
+    <string name="app_name">TennisReplay</string>
     <string name="recording_channel_name">Match recording</string>
     <string name="recording_channel_description">Shown while a match is being recorded.</string>
     <string name="serve_scan_channel_name">Finding serves</string>

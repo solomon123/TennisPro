@@ -1,20 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- A tennis ball inside a replay arrow. Everything stays within the 33-unit safe-zone radius. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M29.38,49.66 A25,25 0 1,0 49.66,29.38" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeLineJoin="round"
+        android:pathData="M40.8,30.94 L48.36,21.99 L50.96,36.77 Z" />
+    <path
         android:fillColor="#D8F544"
-        android:pathData="M54,30a24,24 0 1,0 0,48a24,24 0 1,0 0,-48z" />
+        android:pathData="M38,54 A16,16 0 1,0 70,54 A16,16 0 1,0 38,54 Z" />
     <path
-        android:strokeColor="#0F2E1A"
-        android:strokeWidth="2.5"
+        android:strokeColor="#1B4332"
+        android:strokeWidth="2.2"
         android:fillColor="#00000000"
-        android:pathData="M36,37 C46,45 46,63 36,71" />
+        android:pathData="M42.55,42.83 A16.8,16.8 0 0,1 42.55,65.17" />
     <path
-        android:strokeColor="#0F2E1A"
-        android:strokeWidth="2.5"
+        android:strokeColor="#1B4332"
+        android:strokeWidth="2.2"
         android:fillColor="#00000000"
-        android:pathData="M72,37 C62,45 62,63 72,71" />
+        android:pathData="M65.45,42.83 A16.8,16.8 0 0,0 65.45,65.17" />
 </vector>
