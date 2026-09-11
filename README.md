@@ -77,6 +77,12 @@ selected as the target).
    is bookmarked and the watch gives a faint confirmation tick.
 8. Stop. The recording appears on Home with size, duration and mark count, and can
    be deleted.
+9. **From the watch**, for a phone hung out of reach: open **Record a match** and
+   leave it on screen, then tap **REC** at the bottom of the watch face → one long
+   buzz, and the phone's REC clock is running. Tap **STOP** twice (the first tap
+   asks to confirm) → two buzzes, and the recording is saved and scanned. With the
+   phone on any other screen, REC answers "Open Record on the phone" after a few
+   seconds; with the phone locked, "Unlock the phone".
 
 Step 6 is the one worth being fussy about: capture living in a foreground service
 rather than the activity is what makes a two-hour match on a fence possible.

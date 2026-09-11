@@ -15,6 +15,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import com.tennispro.phone.camera.RecordingService
 import com.tennispro.phone.ui.AppRoot
 import com.tennispro.phone.ui.theme.TennisProTheme
@@ -88,14 +89,18 @@ class MainActivity : ComponentActivity() {
     /**
      * Promotes the service to the foreground *before* asking it to record. From
      * Android 14 a `camera`-typed foreground service may only be started while the
-     * app is visible, which is exactly here.
+     * app is visible. A tap on the phone always is; a tap on the watch can arrive
+     * with the phone locked, so this returns false then instead of crashing.
      */
-    private fun startRecording() {
+    private fun startRecording(): Boolean {
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return false
+        val recorder = service.value ?: return false
         val intent = Intent(this, RecordingService::class.java).apply {
             action = RecordingService.ACTION_PROMOTE_FOREGROUND
         }
         ContextCompat.startForegroundService(this, intent)
-        service.value?.startRecording()
+        recorder.startRecording()
+        return true
     }
 
     private fun bindRecordingService() {

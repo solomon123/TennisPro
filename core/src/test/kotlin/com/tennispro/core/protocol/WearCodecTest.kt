@@ -51,6 +51,14 @@ class WearCodecTest {
     }
 
     @Test
+    fun `record control round trips both ways`() {
+        for (start in listOf(true, false)) {
+            val original = WatchToPhone.RecordControl(start)
+            assertEquals(original, WearCodec.decodeWatchToPhone(WearCodec.encode(original)))
+        }
+    }
+
+    @Test
     fun `every alert kind round trips`() {
         for (kind in AlertKind.entries) {
             val original = PhoneToWatch.Alert(kind = kind, headline = kind.name)

@@ -124,6 +124,25 @@ class WearLink(context: Context) {
         send(PhoneToWatch.Status(recording = recording, text = text))
 
     /**
+     * Tells the watch whether the phone is recording, with a buzz. Every Record or
+     * Stop tap on the watch gets one of these (or [sendRecordingRefused]) back —
+     * the phone is usually hung out of reach, so the wrist is the only place the
+     * player can see that it worked.
+     */
+    suspend fun sendRecordingState(recording: Boolean, headline: String) {
+        sendStatus(recording, headline)
+        send(
+            PhoneToWatch.Alert(
+                kind = if (recording) AlertKind.RECORDING_STARTED else AlertKind.RECORDING_STOPPED,
+                headline = headline,
+            ),
+        )
+    }
+
+    suspend fun sendRecordingRefused(headline: String): SendOutcome =
+        send(PhoneToWatch.Alert(kind = AlertKind.RECORDING_REFUSED, headline = headline))
+
+    /**
      * Pushes the live score to the [WearPaths.MATCH_STATE] DataItem, or clears it
      * when [projection] is null (match ended).
      *

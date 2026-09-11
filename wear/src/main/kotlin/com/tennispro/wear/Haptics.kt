@@ -78,6 +78,25 @@ class Haptics(context: Context) {
                 timings = longArrayOf(0, 90),
                 amplitudes = intArrayOf(0, 160),
             )
+
+            // The phone is hung out of reach, so this buzz is the only proof it
+            // started: one long, firm pulse, unlike any scoring pattern.
+            AlertKind.RECORDING_STARTED -> waveform(
+                timings = longArrayOf(0, 350),
+                amplitudes = intArrayOf(0, 220),
+            )
+
+            // Two firm pulses, spaced wider than a game win's.
+            AlertKind.RECORDING_STOPPED -> waveform(
+                timings = longArrayOf(0, 150, 150, 150),
+                amplitudes = intArrayOf(0, 220, 0, 220),
+            )
+
+            // Long and soft: something needs doing on the phone.
+            AlertKind.RECORDING_REFUSED -> waveform(
+                timings = longArrayOf(0, 500),
+                amplitudes = intArrayOf(0, 110),
+            )
         }
 
         vibrator.vibrate(effect)

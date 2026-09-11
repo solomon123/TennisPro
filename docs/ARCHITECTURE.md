@@ -83,6 +83,37 @@ From Android 14 a `camera`-typed foreground service may only be *started* while 
 app is visible, which is why `MainActivity.startRecording()` promotes the service
 before asking it to record.
 
+### Starting and stopping from the watch
+
+A phone hung high on a fence is out of reach, so the watch face has a Record/Stop
+button that sends `WatchToPhone.RecordControl`. It is its own message rather than a
+fourth `Gesture`, because while a match is scored every gesture already means a
+point or an undo. The button is drawn as a sibling *over* the full-screen tap
+surface, not inside it, so pressing it never also scores a point.
+
+Start and stop are handled in different places, because Android treats them
+differently:
+
+- **Start** is handled by `RecordScreen`, and only there: that screen shows what
+  will be recorded. The Android 14 rule above applies to a watch tap exactly as to
+  a phone tap, but a watch tap can arrive with the phone locked.
+  `MainActivity.startRecording()` therefore checks the activity is at least
+  STARTED and returns false otherwise, and the watch is told "Unlock the phone"
+  instead of the app crashing.
+- **Stop** is handled by `RecordingService`, which is alive for as long as a
+  recording is, whatever screen is showing.
+
+`RecordingService` tells the watch when a recording really starts and finishes
+(`RECORDING_STARTED` / `RECORDING_STOPPED` plus a `Status`). It sends these from its
+`VideoRecordEvent`s, not from button presses, so the buzz means the file is being
+written. They go out on `TennisProApp.appScope`: Finalize calls `stopSelf()`
+straight away, which would cancel the service's own scope mid-send when no screen
+is bound.
+
+The watch expects an answer to every tap. If none comes within five seconds, the
+phone app isn't on its Record screen. Stop needs a second tap on the watch: starting
+by accident costs nothing, but stopping by accident loses the rest of the match.
+
 ## Storage
 
 `Android/data/com.tennisreplay/files/Movies/sessions/<id>/`

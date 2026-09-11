@@ -56,7 +56,8 @@ fun RecordScreen(
     scoringActive: Boolean,
     cameraGranted: Boolean,
     onRequestPermissions: () -> Unit,
-    onStartRecording: () -> Unit,
+    /** False when Android would refuse to start the camera, i.e. the phone is locked. */
+    onStartRecording: () -> Boolean,
     onBack: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -83,18 +84,39 @@ fun RecordScreen(
     // A long press on the watch marks the moment — unless a match is being
     // scored, where the same long press means undo (MatchController handles
     // that) and marking too would do two things at once.
+    //
+    // The watch's Record button starts a recording only from this screen: it shows
+    // what will be recorded, and Android only lets the camera start while the app
+    // is on screen anyway. Its Stop is RecordingService's job, since a recording
+    // outlives this screen.
     val currentScoringActive by rememberUpdatedState(scoringActive)
+    val currentState by rememberUpdatedState(state)
     LaunchedEffect(service) {
         WearEventBus.events.collect { received ->
-            val input = received.message as? WatchToPhone.Input ?: return@collect
-            if (input.gesture == Gesture.LONG_PRESS && !currentScoringActive) {
-                val mark = service?.bookmark("watch long press")
-                toast = if (mark != null) {
-                    scope.launch { wearLink.send(bookmarkAck()) }
-                    "Marked at ${formatElapsed(mark.offsetMs)}"
-                } else {
-                    "Not recording — nothing to mark"
+            when (val message = received.message) {
+                is WatchToPhone.Input -> if (message.gesture == Gesture.LONG_PRESS && !currentScoringActive) {
+                    val mark = service?.bookmark("watch long press")
+                    toast = if (mark != null) {
+                        scope.launch { wearLink.send(bookmarkAck()) }
+                        "Marked at ${formatElapsed(mark.offsetMs)}"
+                    } else {
+                        "Not recording — nothing to mark"
+                    }
                 }
+
+                is WatchToPhone.RecordControl -> if (message.start) {
+                    when {
+                        currentState is CaptureState.Recording ->
+                            scope.launch { wearLink.sendRecordingState(recording = true, headline = "Already recording") }
+                        currentState !is CaptureState.Ready ->
+                            scope.launch { wearLink.sendRecordingRefused("Camera not ready") }
+                        // RecordingService buzzes the watch once the file is really being written.
+                        onStartRecording() -> toast = "Started from the watch"
+                        else -> scope.launch { wearLink.sendRecordingRefused("Unlock the phone") }
+                    }
+                }
+
+                else -> Unit
             }
         }
     }
@@ -211,10 +233,8 @@ fun RecordScreen(
                 when (state) {
                     is CaptureState.Recording -> {
                         Button(
-                            onClick = {
-                                service?.stopRecording()
-                                scope.launch { wearLink.sendStatus(false, "Stopped") }
-                            },
+                            // RecordingService tells the watch once the file is saved.
+                            onClick = { service?.stopRecording() },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error,
                             ),
@@ -229,10 +249,7 @@ fun RecordScreen(
                     else -> {
                         Button(
                             enabled = cameraGranted && state is CaptureState.Ready,
-                            onClick = {
-                                onStartRecording()
-                                scope.launch { wearLink.sendStatus(true, "Recording") }
-                            },
+                            onClick = { onStartRecording() },
                         ) { Text("Start recording") }
                     }
                 }
@@ -240,14 +257,17 @@ fun RecordScreen(
                 Spacer(Modifier.width(4.dp))
             }
 
-            if (state is CaptureState.Recording) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Long-press the watch to mark a moment · saved to ${state.session.meta.id}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (state is CaptureState.Recording) {
+                    "Long-press the watch to mark a moment · tap STOP on the watch to end · " +
+                        "saved to ${state.session.meta.id}"
+                } else {
+                    "Phone out of reach? Leave this screen open and tap REC on the watch."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

@@ -32,6 +32,15 @@ enum class AlertKind {
 
     /** The last point was undone from the watch or phone. Phase 1 scoring. */
     UNDO,
+
+    /** The phone started writing a recording, however it was started. */
+    RECORDING_STARTED,
+
+    /** The phone finished a recording, or was asked to stop while not recording. */
+    RECORDING_STOPPED,
+
+    /** The phone could not act on the watch's Record button; the headline says why. */
+    RECORDING_REFUSED,
 }
 
 /** Physical button / gesture the user performed on the watch. */
@@ -116,5 +125,17 @@ sealed interface WatchToPhone {
     @SerialName("input")
     data class Input(
         val gesture: Gesture,
+    ) : WatchToPhone
+
+    /**
+     * The watch's Record/Stop button, for a phone hung out of reach. Its own
+     * message rather than another [Gesture]: while a match is scored every gesture
+     * already means a point or an undo. Explicit start/stop rather than a toggle,
+     * so a watch showing stale state can never stop a recording it meant to start.
+     */
+    @Serializable
+    @SerialName("record")
+    data class RecordControl(
+        val start: Boolean,
     ) : WatchToPhone
 }

@@ -37,12 +37,15 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import com.tennispro.core.protocol.WatchToPhone
 import com.tennispro.phone.MainActivity
 import com.tennispro.phone.R
+import com.tennispro.phone.TennisProApp
 import com.tennispro.phone.storage.Bookmark
 import com.tennispro.phone.storage.MatchSession
 import com.tennispro.phone.storage.MatchStorage
 import com.tennispro.phone.vision.ServeScanService
+import com.tennispro.phone.wear.WearEventBus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -114,6 +117,16 @@ class RecordingService : LifecycleService() {
         cameraPreferences = CameraPreferences(this)
         createNotificationChannel()
         lifecycleScope.launch { bindCameraUseCases() }
+
+        // Stop from the watch is handled here, not in RecordScreen: a recording
+        // outlives that screen, and the phone may be locked in its mount by the
+        // time the watch asks. Starting stays with RecordScreen — see there.
+        lifecycleScope.launch {
+            WearEventBus.events.collect { received ->
+                val control = received.message as? WatchToPhone.RecordControl ?: return@collect
+                if (!control.start) stopFromWatch()
+            }
+        }
     }
 
     override fun onBind(intent: Intent): IBinder {
@@ -217,6 +230,8 @@ class RecordingService : LifecycleService() {
                         bookmarkCount = 0,
                     )
                     Log.i(TAG, "Recording started: ${session.meta.id}")
+                    // From the event, not the button: the buzz means the file is really being written.
+                    tellWatch(recording = true, headline = "Recording")
                 }
 
                 is VideoRecordEvent.Finalize -> {
@@ -233,9 +248,11 @@ class RecordingService : LifecycleService() {
                     if (event.hasError()) {
                         Log.e(TAG, "Recording finalized with error ${event.error}", event.cause)
                         _state.value = CaptureState.Error("Recording error ${event.error}")
+                        tellWatch(recording = false, headline = "Recording error")
                     } else {
                         Log.i(TAG, "Recording saved: ${event.outputResults.outputUri}")
                         _state.value = CaptureState.Ready(currentResolution(), requestedFrameRate)
+                        tellWatch(recording = false, headline = "Stopped")
 
                         // See the note on newVideoCapture in tryBind(): the front
                         // camera's recorded file comes out of CameraX with the
@@ -268,6 +285,25 @@ class RecordingService : LifecycleService() {
 
     fun stopRecording() {
         activeRecording?.stop()
+    }
+
+    /** The watch always gets an answer: the Finalize event's, or this one. */
+    private fun stopFromWatch() {
+        val recording = activeRecording
+        if (recording == null) {
+            tellWatch(recording = false, headline = "Not recording")
+        } else {
+            recording.stop()
+        }
+    }
+
+    /**
+     * On the app's scope, not [lifecycleScope]: Finalize calls [stopSelf] right
+     * after this, which would cancel the send when no screen is bound.
+     */
+    private fun tellWatch(recording: Boolean, headline: String) {
+        val app = application as TennisProApp
+        app.appScope.launch { app.wearLink.sendRecordingState(recording, headline) }
     }
 
     /**

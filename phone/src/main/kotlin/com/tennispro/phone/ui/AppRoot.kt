@@ -26,7 +26,7 @@ fun AppRoot(
     service: RecordingService?,
     cameraGranted: Boolean,
     onRequestPermissions: () -> Unit,
-    onStartRecording: () -> Unit,
+    onStartRecording: () -> Boolean,
 ) {
     var screen by rememberSaveable { mutableStateOf(Screen.HOME) }
     val diagnostics = remember { WatchDiagnostics(app.wearLink) }

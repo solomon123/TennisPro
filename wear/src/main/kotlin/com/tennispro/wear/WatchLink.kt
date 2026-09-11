@@ -29,6 +29,9 @@ class WatchLink(context: Context) {
     suspend fun sendGesture(gesture: Gesture): Boolean =
         send(WatchToPhone.Input(gesture))
 
+    suspend fun sendRecordControl(start: Boolean): Boolean =
+        send(WatchToPhone.RecordControl(start))
+
     suspend fun sendPong(nonce: Long, phoneSentAtElapsedMs: Long): Boolean =
         send(
             WatchToPhone.Pong(
