@@ -2,9 +2,11 @@ package com.tennispro.phone.vision
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Log
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
 import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker
 import com.tennispro.core.court.PixelPoint
@@ -25,10 +27,21 @@ import com.tennispro.core.vision.PoseSample
  */
 class PoseSampler(context: Context) : AutoCloseable {
 
-    private val landmarker: PoseLandmarker = PoseLandmarker.createFromOptions(
+    // GPU first: the pose pass ran at about real time on CPU, which makes a
+    // two-hour match a two-hour scan. CPU if the GPU delegate won't initialize.
+    private val loaded: Pair<PoseLandmarker, String> = runCatching { create(context, Delegate.GPU) to "GPU" }
+        .onFailure { Log.w(TAG, "GPU pose delegate unavailable, using CPU", it) }
+        .getOrElse { create(context, Delegate.CPU) to "CPU" }
+
+    private val landmarker: PoseLandmarker = loaded.first
+
+    /** Which MediaPipe delegate actually loaded, for the scan's timing log. */
+    val delegate: String = loaded.second
+
+    private fun create(context: Context, delegate: Delegate): PoseLandmarker = PoseLandmarker.createFromOptions(
         context,
         PoseLandmarker.PoseLandmarkerOptions.builder()
-            .setBaseOptions(BaseOptions.builder().setModelAssetPath(MODEL_ASSET).build())
+            .setBaseOptions(BaseOptions.builder().setModelAssetPath(MODEL_ASSET).setDelegate(delegate).build())
             .setRunningMode(RunningMode.VIDEO)
             .setNumPoses(MAX_PEOPLE)
             .build(),
@@ -65,6 +78,7 @@ class PoseSampler(context: Context) : AutoCloseable {
     }
 
     private companion object {
+        const val TAG = "PoseSampler"
         const val MODEL_ASSET = "pose_landmarker_lite.task"
         const val MAX_PEOPLE = 3
 

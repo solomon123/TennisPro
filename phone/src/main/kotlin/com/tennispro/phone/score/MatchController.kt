@@ -32,12 +32,10 @@ import kotlinx.coroutines.launch
  * calls ([pointFor] / [undo]), so there is exactly one place that decides what
  * counts as a game/set/match win worth a distinct haptic.
  *
- * **Known gap:** [Gesture.LONG_PRESS] is also how [com.tennispro.phone.ui.RecordScreen]
- * marks a video bookmark. The two listen independently, so a long press while a
- * match is active *and* a recording is running does both — undoes a point and
- * drops a bookmark. Fine for Phase 1, where scoring and recording are used one
- * at a time; arbitrating the two is Phase 2's problem once they are meant to
- * run together.
+ * [Gesture.LONG_PRESS] is also how [com.tennispro.phone.ui.RecordScreen] marks a
+ * moment in a recording. While a match is being scored it means undo only:
+ * RecordScreen ignores it then, so one press never both undoes a point and
+ * drops a mark. Marking matters less now that serves are found automatically.
  */
 class MatchController(
     private val storage: ScoreStorage,

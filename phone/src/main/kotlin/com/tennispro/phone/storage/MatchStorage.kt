@@ -40,7 +40,13 @@ data class DetectedServe(
     val speedKmh: Double? = null,
     val errorBandPercent: Double? = null,
     val netFault: Boolean = false,
-    val inServiceBox: Boolean? = null,
+    /** [com.tennispro.core.court.CallVerdict] name: IN, OUT or TOO_CLOSE. Null for net faults, and for scans before calls existed. */
+    val callVerdict: String? = null,
+    /** Distance to the deciding line: positive inside the box, negative outside. */
+    val callMarginMeters: Double? = null,
+    val callErrorMeters: Double? = null,
+    /** [com.tennispro.core.court.BoxEdge] name. */
+    val callEdge: String? = null,
     val bounceXMeters: Double? = null,
     val bounceYMeters: Double? = null,
 )

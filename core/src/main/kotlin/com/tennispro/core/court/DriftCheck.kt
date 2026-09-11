@@ -28,3 +28,22 @@ fun frameDifference(reference: IntArray, current: IntArray): Int {
     for (i in reference.indices) sum += abs(reference[i] - current[i])
     return (sum / reference.size).toInt()
 }
+
+/**
+ * The real drift check, once a court can be re-detected: the largest distance,
+ * in pixels, between each saved calibration corner and the same corner found
+ * again in a fresh frame of the same size. Only corners inside the frame count
+ * — an off-frame corner is extrapolated, and moves a lot with tiny line-fit
+ * differences. Null if no corner is inside the frame.
+ */
+fun cornerShift(saved: List<PixelPoint>, detected: List<PixelPoint>, frameWidth: Int, frameHeight: Int): Float? {
+    require(saved.size == detected.size) { "Corner lists must match (${saved.size} vs ${detected.size})" }
+    var largest: Float? = null
+    for (i in saved.indices) {
+        val s = saved[i]
+        if (s.x < 0 || s.y < 0 || s.x > frameWidth || s.y > frameHeight) continue
+        val d = kotlin.math.hypot(s.x - detected[i].x, s.y - detected[i].y)
+        largest = maxOf(largest ?: 0f, d)
+    }
+    return largest
+}

@@ -4,10 +4,11 @@ Turns a phone camera and a Galaxy Watch into a tennis match assistant: records t
 match, scores it from your wrist, and — in later phases — estimates serve speed
 and calls the service line.
 
-**Phases 0-2 are complete and verified on real hardware** (a Galaxy S25 Ultra and a
-Galaxy Watch8 Classic). **Phase 3 (serve speed) is code-complete and crash-free on
-that hardware; its accuracy is not yet verified** — see
-[Verifying Phase 3](#verifying-phase-3).
+**Phases 0-4 are complete and verified on real hardware** (a Galaxy S25 Ultra and a
+Galaxy Watch8 Classic). After every recording, serves are found and measured
+automatically and each gets a service-line call, tested against real-court footage;
+**nothing has yet been checked against a radar gun or an independent line call** — see
+[Verifying Phase 3](#verifying-phase-3) and [Verifying Phase 4](#verifying-phase-4).
 
 Before trusting anything this app eventually says about speed or line calls, read
 [docs/ACCURACY.md](docs/ACCURACY.md). Short version: serve speed lands within about
@@ -67,8 +68,8 @@ selected as the target).
    alert.
 6. Back on Home, **Record a match**. Start recording, lock the phone screen, wait,
    unlock — recording should still be running.
-7. Long-press the watch while recording → the moment is bookmarked and the watch
-   gives a faint confirmation tick.
+7. Long-press the watch while recording (with no match being scored) → the moment
+   is bookmarked and the watch gives a faint confirmation tick.
 8. Stop. The recording appears on Home with size, duration and mark count, and can
    be deleted.
 
@@ -92,9 +93,9 @@ the watch link works. Confirmed on a Galaxy S25 Ultra + Galaxy Watch8 Classic:
 4. Back the watch out to its home screen mid-match, score more points on the phone,
    then reopen the watch app — the score is current immediately, no re-sync needed.
    That's the latched `DataClient` state doing its job, not a fire-and-forget message.
-5. Try scoring and recording at the same time. Read the "Known gap" note on
-   `MatchController` first — right now a watch long-press does *both* undo a point
-   and mark a video bookmark, which is expected for Phase 1, not a bug.
+5. Try scoring and recording at the same time: a watch long-press undoes the last
+   point and does *not* also mark the recording (the watch says "Undo"); with no
+   match being scored, it marks the moment instead (the watch says "Marked").
 
 Two real bugs turned up only once this ran on physical hardware, both now fixed:
 neither `WearableListenerService` should declare
@@ -126,12 +127,11 @@ Galaxy S25 Ultra, back and front camera both:
    moment calibrated — try **Calibrate from this frame** as the other entry
    point into the same tap flow. **Play** actually watches the recording back
    at normal speed with play/pause/seek.
-5. Nudge the phone's mount slightly and reopen **Record a match** — the
-   "Camera may have moved" chip should now appear. This is a rough
-   pixel-difference check, not real line detection (see
-   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)'s Calibration section) — it's
-   expected to miss a small nudge and flag a big lighting change, so judge it
-   loosely, not as a precise trigger.
+5. Nudge the phone's mount and reopen **Record a match** — the "Camera may have
+   moved" chip should appear. The check re-detects the court and compares corners
+   with the calibration (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)'s
+   Calibration section), falling back to a rough pixel-difference check when the
+   court can't be found.
 6. If using the front camera: switch to it on Home, confirm the live preview
    in both **Calibrate court** and **Record a match** is right-side up, then
    record a clip and confirm **Replay** plays it back right-side up too. Both
@@ -175,6 +175,30 @@ Not yet verified:
 5. **A long recording.** The pose pass runs at about real time on this phone,
    so check a full match scans to completion in the background.
 
+## Verifying Phase 4
+
+`:core:test` covers the call itself in `ServiceLineCallTest` — in, out long, the
+wrong box, either server side, a ball touching a line, too close to call, each axis
+judged against its own uncertainty, doubles-calibrated courts — and
+`ServeFlightTest` checks that a simulated serve 42 cm inside the service line is not
+called out.
+
+Confirmed on a Galaxy S25 Ultra and against the 2026-09-08 footage:
+
+1. Replay → a scanned recording → each serve's chip reads like
+   `00:38 · 144 km/h · IN by 43 cm`, `OUT by 92 cm`, or `too close to call`. Net
+   faults read `net` and get no call.
+2. Frame by frame with the projected court lines drawn in, a serve called IN by
+   46 cm (±5 cm, centre line) lands clearly inside the correct box, and a bounce
+   hidden behind the server's head gets no call rather than a wrong one.
+
+Not yet verified:
+
+3. **Against an independent call** — a line judge, or slow-motion video from beside
+   the line. From the 2026-09-08 mount height, calls on the far service line carry
+   about ±50 cm and will mostly read "too close"; mount higher for real
+   service-line calls.
+
 ## Where this is going
 
 | Phase | Scope | State |
@@ -182,8 +206,8 @@ Not yet verified:
 | 0 | Scaffolding, recording, phone↔watch link | **Done**, proven on court |
 | 1 | Manual scoring from the watch, persisted match state | **Done**, proven on hardware |
 | 2 | Court calibration UI + video replay harness | **Done**, proven on hardware |
-| 3 | Serve speed | Code complete, crash-free on hardware, **accuracy unverified** — pending a real-court test |
-| 4 | Service line in/out calls | Planned |
+| 3 | Serve speed, found automatically after each recording | **Done**, tested on real-court footage; speed **not yet checked against a radar gun** |
+| 4 | Service line in/out calls, after the match | **Done**, tested on real-court footage; live calls on the watch deferred |
 | 5 | Clip export, match history, stats | Stretch |
 
 Rally line calling and auto-scoring are **out of scope for v1** by deliberate

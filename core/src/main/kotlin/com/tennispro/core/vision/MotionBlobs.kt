@@ -60,7 +60,7 @@ object MotionBlobs {
         minPixels: Int = 3,
         maxPixels: Int = 150,
         maxDimension: Int = 30,
-        exclude: PixelRect? = null,
+        exclude: List<PixelRect> = emptyList(),
     ): List<BallCandidate> {
         require(prev.width == curr.width && curr.width == next.width && prev.height == curr.height && curr.height == next.height) {
             "Frames must be the same size to difference them"
@@ -73,7 +73,7 @@ object MotionBlobs {
         return findBlobs(mask, curr.width, curr.height)
             .filter { it.pixelCount in minPixels..maxPixels && it.width <= maxDimension && it.height <= maxDimension }
             .map { BallCandidate(it.centroidX, it.centroidY, it.pixelCount) }
-            .filterNot { exclude != null && exclude.contains(it.x, it.y) }
+            .filterNot { candidate -> exclude.any { it.contains(candidate.x, candidate.y) } }
     }
 
     private class Blob(var minX: Int, var minY: Int, var maxX: Int, var maxY: Int, var pixelCount: Int, var sumX: Long, var sumY: Long) {

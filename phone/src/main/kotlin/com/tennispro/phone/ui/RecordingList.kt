@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.tennispro.phone.storage.DetectedServe
 import com.tennispro.phone.storage.MatchSession
 import com.tennispro.phone.storage.MatchStorage
 import com.tennispro.phone.storage.SessionServes
@@ -252,6 +253,24 @@ private fun details(session: MatchSession, sizeBytes: Long): String = buildStrin
     session.serves?.let { append(" · ${servesSummary(it)}") }
     if (session.bookmarks.isNotEmpty()) append(" · ${session.bookmarks.size} marked")
 }
+
+/**
+ * A serve's service-line call as docs/ACCURACY.md words it: "IN by 30 cm",
+ * "OUT by 1.3 m", or "too close to call". Null when there is no call (a net
+ * fault, or a scan from before calls existed).
+ */
+internal fun callLabel(serve: DetectedServe): String? {
+    val margin = serve.callMarginMeters ?: return null
+    return when (serve.callVerdict) {
+        "IN" -> "IN by ${formatDistance(margin)}"
+        "OUT" -> "OUT by ${formatDistance(-margin)}"
+        "TOO_CLOSE" -> "too close to call"
+        else -> null
+    }
+}
+
+private fun formatDistance(meters: Double): String =
+    if (meters < 1.0) "${(meters * 100).roundToInt()} cm" else "%.1f m".format(meters)
 
 internal fun servesSummary(serves: SessionServes): String {
     if (serves.error != null) return "Serve scan didn't run"

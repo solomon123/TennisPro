@@ -92,7 +92,8 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
                 detectTapGestures(
                     onTap = { report(Gesture.SINGLE_TAP, "Tap") },
                     onDoubleTap = { report(Gesture.DOUBLE_TAP, "Double tap") },
-                    onLongPress = { report(Gesture.LONG_PRESS, "Marked") },
+                    // The phone treats a long press as undo while a match is scored, a mark otherwise.
+                    onLongPress = { report(Gesture.LONG_PRESS, if (matchState != null) "Undo" else "Marked") },
                 )
             },
         contentAlignment = Alignment.Center,

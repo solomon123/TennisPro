@@ -58,28 +58,42 @@ class ServeScanner(
             ?: return failed("Couldn't find the court in this recording — calibrate, then scan again")
 
         val samples = ArrayList<PoseSample>()
+        val poseStart = System.nanoTime()
+        var inferenceNanos = 0L
+        var delegate = "?"
         PoseSampler(context).use { sampler ->
+            delegate = sampler.delegate
             source.decodeSampledColor(0, info.durationMs, POSE_INTERVAL_MS) { timeMs, frame ->
                 if (isCancelled()) throw CancellationException("Serve scan cancelled")
+                val t0 = System.nanoTime()
                 samples += sampler.sample(frame, timeMs, width, height)
+                inferenceNanos += System.nanoTime() - t0
                 onProgress(POSE_PASS_SHARE * timeMs / info.durationMs)
             }
         }
 
         val proposals = ServeProposals.find(samples, sessionCourt, width, height)
-        Log.i(TAG, "${session.meta.id}: ${samples.size} pose samples, ${proposals.size} serve proposals")
+        Log.i(
+            TAG,
+            "${session.meta.id}: ${samples.size} pose samples in %.1f s (%.1f s pose inference on %s), ${proposals.size} serve proposals"
+                .format((System.nanoTime() - poseStart) / 1e9, inferenceNanos / 1e9, delegate),
+        )
 
         val serves = proposals.mapIndexedNotNull { index, proposal ->
             if (isCancelled()) throw CancellationException("Serve scan cancelled")
+            val measureStart = System.nanoTime()
             val outcome = measure(source, proposal, sessionCourt, format, width, height, info.durationMs)
             onProgress(POSE_PASS_SHARE + (1 - POSE_PASS_SHARE) * (index + 1) / proposals.size)
-            Log.i(TAG, "${session.meta.id}: proposal at ${proposal.racketUpMs} ms -> $outcome")
+            Log.i(TAG, "${session.meta.id}: proposal at ${proposal.racketUpMs} ms -> $outcome (%.1f s)".format((System.nanoTime() - measureStart) / 1e9))
             when (outcome) {
                 is ServeOutcome.Measured -> DetectedServe(
                     contactMs = outcome.contactMs,
                     speedKmh = outcome.kmh,
                     errorBandPercent = outcome.errorBandPercent,
-                    inServiceBox = outcome.inServiceBox,
+                    callVerdict = outcome.call.verdict.name,
+                    callMarginMeters = outcome.call.marginMeters,
+                    callErrorMeters = outcome.call.errorBandMeters,
+                    callEdge = outcome.call.edge.name,
                     bounceXMeters = outcome.bounce.xMeters.toDouble(),
                     bounceYMeters = outcome.bounce.yMeters.toDouble(),
                 )
@@ -104,13 +118,7 @@ class ServeScanner(
         val endMs = (proposal.racketUpMs + WINDOW_AFTER_MS).coerceAtMost(durationMs)
         if (endMs <= startMs) return ServeOutcome.NoFlight("Serve too close to the end of the recording")
 
-        val server = proposal.server
-        val body = PixelRect(
-            left = server.box.left - BODY_MARGIN_PX,
-            top = server.nose.y - HEAD_MARGIN_PX,
-            right = server.box.right + BODY_MARGIN_PX,
-            bottom = height.toDouble(),
-        )
+        val body = ServeFlight.bodyMask(proposal.server, height)
 
         val frames = ArrayList<FrameBlobs>()
         var court: Homography? = null
@@ -161,8 +169,5 @@ class ServeScanner(
         /** Decode window around racket-up: the toss before, the flight and bounce after. */
         const val WINDOW_BEFORE_MS = 700L
         const val WINDOW_AFTER_MS = 2_000L
-
-        const val BODY_MARGIN_PX = 40.0
-        const val HEAD_MARGIN_PX = 20.0
     }
 }

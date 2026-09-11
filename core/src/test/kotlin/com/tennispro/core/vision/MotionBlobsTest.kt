@@ -44,7 +44,7 @@ class MotionBlobsTest {
         val prev = frame()
         val curr = frame(20 to 20, 60 to 20)
         val next = frame()
-        val found = MotionBlobs.find(prev, curr, next, exclude = PixelRect(50.0, 0.0, 79.0, 59.0))
+        val found = MotionBlobs.find(prev, curr, next, exclude = listOf(PixelRect(50.0, 0.0, 79.0, 59.0)))
 
         assertEquals(1, found.size)
         assertEquals(20.0, found[0].x, 0.01)

@@ -58,6 +58,7 @@ fun AppRoot(
                     service = service,
                     wearLink = app.wearLink,
                     calibrationStorage = app.calibrationStorage,
+                    scoringActive = matchController.match.collectAsState().value != null,
                     cameraGranted = cameraGranted,
                     onRequestPermissions = onRequestPermissions,
                     onStartRecording = onStartRecording,

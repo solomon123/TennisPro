@@ -165,6 +165,27 @@ class CourtTest {
         assertEquals(0, frameDifference(intArrayOf(), intArrayOf()))
     }
 
+    @Test
+    fun `corner shift is the largest move of an in-frame corner`() {
+        val saved = listOf(PixelPoint(200f, 950f), PixelPoint(1700f, 950f), PixelPoint(700f, 400f), PixelPoint(1200f, 400f))
+        val moved = listOf(PixelPoint(203f, 954f), PixelPoint(1700f, 950f), PixelPoint(700f, 412f), PixelPoint(1200f, 400f))
+        assertEquals(12f, cornerShift(saved, moved, 1920, 1080)!!, 0.01f)
+    }
+
+    @Test
+    fun `corner shift ignores corners outside the frame`() {
+        // The near-left corner is extrapolated off-frame; its big move is fit noise, not drift.
+        val saved = listOf(PixelPoint(-280f, 1088f), PixelPoint(1672f, 992f), PixelPoint(676f, 631f), PixelPoint(1066f, 615f))
+        val detected = listOf(PixelPoint(-320f, 1110f), PixelPoint(1673f, 993f), PixelPoint(677f, 631f), PixelPoint(1066f, 616f))
+        assertEquals(1.41f, cornerShift(saved, detected, 1920, 1080)!!, 0.01f)
+    }
+
+    @Test
+    fun `corner shift is null with no corner in frame`() {
+        val off = listOf(PixelPoint(-10f, -10f))
+        assertNull(cornerShift(off, off, 1920, 1080))
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun `frame difference rejects mismatched grid sizes`() {
         frameDifference(intArrayOf(1, 2, 3), intArrayOf(1, 2))

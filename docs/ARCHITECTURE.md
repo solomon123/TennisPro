@@ -173,18 +173,20 @@ frames, each now a comment where it applies:
 - From a low mount the net tape can sit almost on the far baseline; far
   corners are the least certain part of any calibration from there.
 
-**Drift detection is a first cut, not real detection.** `frameDifference` is a
-mean-absolute-difference over a small downscaled grayscale grid, compared
-against a saved reference frame. It is not line/edge-based re-detection —
-that is classical-CV work that belongs alongside Phase 3/4's ball-detection
-pipeline (see docs/ACCURACY.md's "classical CV first" plan for the ball),
-which this project has no CV dependency for yet. This check will false-positive
-on a big lighting change and miss a small nudge; it exists to catch the case
-that actually matters — the mount got bumped and the frame looks nothing like
-the reference — the same "first cut, not a measurement" spirit as
-`wear/Haptics.kt`'s waveforms. It runs once, in `RecordScreen`, when the live
-preview comes up — not on Home, which does not bind a camera at all and only
-shows whether *some* calibration exists.
+**Drift detection re-detects the court.** `DriftDetector` runs
+`CourtLineDetector` on the live frame (in the recording's pixel space, like the
+saved calibration) and compares corners: `cornerShift` is the largest move of
+any corner inside the frame — an off-frame corner is extrapolated and jitters
+with the line fit — and more than 0.8% of the frame width (~15 px on 1920-wide
+video) flags "Camera may have moved". Detection's own jitter on the 2026-09-08
+footage was a few pixels; the phone's mid-recording bumps moved corners
+20-40 px. When the court can't be found (a dark evening, a covered lens) it
+falls back to the original first cut: `frameDifference`, a mean absolute
+difference over a small grayscale grid against the saved reference frame,
+which false-positives on lighting changes and misses small nudges. It runs
+once, in `RecordScreen`, off the main thread (re-detection takes about a
+second) when the live preview comes up — not on Home, which does not bind a
+camera and only shows whether *some* calibration exists.
 
 The video replay harness (`phone/replay/VideoFrameSource.kt`) is deliberately
 built on `MediaMetadataRetriever.getFrameAtTime`, not a sequential
@@ -400,26 +402,64 @@ visits every frame (H.264 can't skip), but only sampled frames pay for the
 YUV-to-RGB conversion, done straight from the chroma planes at their native
 half resolution.
 
+## Service-line calls (Phase 4, after the match)
+
+Every measured serve gets a call — `core/court/ServiceLineCall.kt`, following
+[ACCURACY.md](ACCURACY.md)'s method: never a bare IN/OUT, and "too close to
+call" whenever the margin is inside the error band.
+
+1. **The bounce, between frames.** `ServeFlight` fits the track's last three
+   points before the bounce and first three after as straight lines in time
+   and takes where their vertical positions meet: the ball touches down
+   between frames almost every time. At the bounce the ball is on the ground
+   plane, so the homography maps that point exactly.
+2. **The target box** is diagonally opposite the server's feet (pose, through
+   the homography). Its edges are widened by what still counts as touching a
+   line: court dimensions already run to the lines' outer edges, the 5 cm
+   centre service line belongs to both boxes, and a bouncing ball's contact
+   patch reaches ~2 cm past the measured point.
+3. **The margin** is the distance to the edge that decides the call — the
+   nearest line when inside, the distance to the box when outside — positive
+   in, negative out.
+4. **The error band** is worked out at the bounce, per axis: ~2.5 px of pixel
+   uncertainty (blob centroid plus calibration corners) times how much court
+   one pixel covers there, plus 3 cm for the between-frames fit. Each line is
+   judged against its own axis, because from behind the baseline a pixel far
+   down the court covers far more court lengthwise than across. On the
+   2026-09-08 footage that meant **±5-6 cm on the centre line and sidelines,
+   but ±43-52 cm on the far service line**: from that low mount the far service
+   box is a few pixels deep. Most close service-line calls from there will be
+   "too close" — honestly — and a higher mount is the fix, not the code.
+
+**A bounce hidden behind the server is not called.** The server's head was
+first masked only up to just above the nose; on one serve the ball landed
+behind the server's head from the camera's view, the tracker followed the
+head's own movement, and the serve was called OUT by 1.72 m. The mask now
+covers the head — a narrow box sized from the nose-to-shoulder distance, since
+masking the full body width that high swallowed another serve's toss and read
+it ~20 km/h slow — and a bounce inside it gets no speed and no call.
+
+Checked against the footage frame by frame, with the projected court lines
+drawn in: a serve called IN by 46 cm (±5 cm, centre line) lands clearly in the
+correct box. Live calls on the watch are deferred — see below.
+
 ## Deliberately deferred
 
 - **Real-time inference during capture.** Serve speed is computed from the buffered
   clip a second or two after contact; nobody needs it inside 100 ms, and running
   inference alongside high-frame-rate capture will thermally throttle a phone
   inside a set. Only line calling genuinely needs low latency.
-- **Real line-based drift re-detection.** The drift check is still the rough
-  pixel-difference heuristic (see Calibration above). `CourtLineDetector` now
-  exists and could replace it outright — re-detect the court and compare
-  corners — but hasn't been wired in yet.
+- **Live service-line calls on the watch.** Calls are made after the match,
+  from the recording. Live calls need detection running during capture — see
+  "Real-time inference" above.
 - **Serve detection's known gaps.** Overheads can pass for serves (2 false
   detections in 10 minutes of rallying). Only the player at the camera's end
   is measured: the far server is too small for pose and serves toward the
-  camera. The pose pass runs at roughly real time on a Galaxy S25 Ultra's CPU,
-  so a two-hour match takes about as long to scan; MediaPipe's GPU delegate or
-  a lower pose rate for long recordings are the obvious levers.
+  camera. Scanning speed on a Galaxy S25 Ultra: the 57 s `18-10-14` recording
+  took 66 s — 45 s of pose pass (24 s of it MediaPipe on the GPU, the rest
+  decoding; on CPU with per-pixel buffer reads it was 69 s) and 7-13 s per
+  proposed serve. So a two-hour match still takes on the order of an hour or
+  two to scan in the background; a lower pose rate for long recordings is the
+  next lever.
 - **120/240 fps.** The single biggest lever on serve-speed error (see
   Frame rate above), still unreachable through CameraX's video path.
-- **Gesture arbitration between recording and scoring.** `RecordScreen`'s
-  bookmark long-press and `MatchController`'s undo long-press listen to the
-  same `WearEventBus` independently. Scoring and recording at once means one
-  long-press does both. Fine while the two are used one at a time; worth
-  fixing once a phase actually needs them running together.

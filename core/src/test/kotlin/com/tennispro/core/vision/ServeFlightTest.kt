@@ -1,5 +1,6 @@
 package com.tennispro.core.vision
 
+import com.tennispro.core.court.CallVerdict
 import com.tennispro.core.court.CalibrationPoints
 import com.tennispro.core.court.CourtFormat
 import com.tennispro.core.court.Homography
@@ -191,7 +192,9 @@ class ServeFlightTest {
         assertTrue("expected a measured serve, got ${describe(s, outcome)}", outcome is ServeOutcome.Measured)
         outcome as ServeOutcome.Measured
         assertEquals(describe(s, outcome), launch * 3.6, outcome.kmh, launch * 3.6 * 0.06)
-        assertTrue("bounce ${outcome.bounce} should be in the service box", outcome.inServiceBox)
+        // True bounce (5.62, 17.87): in the far right box, 42 cm inside the service line.
+        assertTrue("call ${outcome.call} for a ball 42 cm inside the line", outcome.call.verdict != CallVerdict.OUT)
+        assertTrue("margin ${outcome.call.marginMeters}", outcome.call.marginMeters in 0.25..0.6)
         assertTrue("contact ${outcome.contactMs} vs ${s.contactMs}", abs(outcome.contactMs - s.contactMs) <= 40)
         assertTrue(outcome.errorBandPercent in 5.0..15.0)
     }

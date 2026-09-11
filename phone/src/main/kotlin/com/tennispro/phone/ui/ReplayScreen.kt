@@ -359,7 +359,7 @@ private fun ServesSection(
                         result.serves.forEach { serve ->
                             val label = when {
                                 serve.netFault -> "net"
-                                serve.speedKmh != null -> "${serve.speedKmh.roundToInt()} km/h" + if (serve.inServiceBox == false) " (out)" else ""
+                                serve.speedKmh != null -> "${serve.speedKmh.roundToInt()} km/h" + (callLabel(serve)?.let { " · $it" } ?: "")
                                 else -> "serve"
                             }
                             // A moment before contact, so the scrubbed frame shows the swing.

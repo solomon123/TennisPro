@@ -33,6 +33,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.tennispro.core.protocol.Gesture
 import com.tennispro.core.protocol.WatchToPhone
+import androidx.compose.runtime.rememberUpdatedState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.tennispro.phone.calibration.CalibrationStorage
 import com.tennispro.phone.calibration.DriftDetector
 import com.tennispro.phone.calibration.DriftStatus
@@ -50,6 +53,7 @@ fun RecordScreen(
     service: RecordingService?,
     wearLink: WearLink,
     calibrationStorage: CalibrationStorage,
+    scoringActive: Boolean,
     cameraGranted: Boolean,
     onRequestPermissions: () -> Unit,
     onStartRecording: () -> Unit,
@@ -76,13 +80,14 @@ fun RecordScreen(
         }
     }
 
-    // A long press on the watch marks the moment. Wired here rather than in a
-    // service so it only applies while a recording screen is actually up; Phase 1
-    // moves gesture routing into the match session itself.
+    // A long press on the watch marks the moment — unless a match is being
+    // scored, where the same long press means undo (MatchController handles
+    // that) and marking too would do two things at once.
+    val currentScoringActive by rememberUpdatedState(scoringActive)
     LaunchedEffect(service) {
         WearEventBus.events.collect { received ->
             val input = received.message as? WatchToPhone.Input ?: return@collect
-            if (input.gesture == Gesture.LONG_PRESS) {
+            if (input.gesture == Gesture.LONG_PRESS && !currentScoringActive) {
                 val mark = service?.bookmark("watch long press")
                 toast = if (mark != null) {
                     scope.launch { wearLink.send(bookmarkAck()) }
@@ -108,10 +113,12 @@ fun RecordScreen(
     // line re-detection.
     LaunchedEffect(state is CaptureState.Ready, previewView) {
         if (state is CaptureState.Ready) {
-            // In video pixel space, like the calibration reference frame it's compared against.
-            previewView?.bitmap
+            // In video pixel space, like the saved calibration it's compared against.
+            val frame = previewView?.bitmap
                 ?.let { snapshot -> service?.previewSnapshotToVideoFrame(snapshot) }
-                ?.let { frame -> driftStatus = driftDetector.check(frame) }
+                ?: return@LaunchedEffect
+            // Re-detecting the court takes about a second.
+            driftStatus = withContext(Dispatchers.Default) { driftDetector.check(frame) }
         }
     }
 

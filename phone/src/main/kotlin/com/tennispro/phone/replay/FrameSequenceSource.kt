@@ -66,7 +66,7 @@ class FrameSequenceSource(private val videoFile: File) {
      * — but are not delivered to [onFrame].
      */
     fun decodeRange(startMs: Long, endMs: Long, onFrame: (timeMs: Long, frame: GrayscaleFrame) -> Unit) {
-        decode(startMs, endMs) { timeMs, image -> onFrame(timeMs, imageToGrayscale(image)) }
+        decode(startMs, endMs, wants = { true }) { timeMs, image -> onFrame(timeMs, imageToGrayscale(image)) }
     }
 
     /**
@@ -86,8 +86,7 @@ class FrameSequenceSource(private val videoFile: File) {
         var nextSampleMs = startMs
         var bitmap: Bitmap? = null
         var pixels = IntArray(0)
-        decode(startMs, endMs) { timeMs, image ->
-            if (timeMs < nextSampleMs) return@decode
+        decode(startMs, endMs, wants = { timeMs -> timeMs >= nextSampleMs }) { timeMs, image ->
             val width = image.width / 2
             val height = image.height / 2
             val target = bitmap?.takeIf { it.width == width && it.height == height }
@@ -102,7 +101,12 @@ class FrameSequenceSource(private val videoFile: File) {
         }
     }
 
-    private fun decode(startMs: Long, endMs: Long, onImage: (timeMs: Long, image: Image) -> Unit) {
+    /**
+     * [wants] decides per frame, before its image is fetched, whether [onImage]
+     * sees it: `getOutputImage` maps the codec buffer into CPU-readable planes,
+     * which is wasted on the 5-in-6 frames the pose pass skips.
+     */
+    private fun decode(startMs: Long, endMs: Long, wants: (timeMs: Long) -> Boolean, onImage: (timeMs: Long, image: Image) -> Unit) {
         require(endMs > startMs) { "endMs ($endMs) must be after startMs ($startMs)" }
 
         val extractor = MediaExtractor()
@@ -124,12 +128,17 @@ class FrameSequenceSource(private val videoFile: File) {
                 return
             }
 
+            // Offline decoding, not playback: ask for maximum speed rather than
+            // letting the codec pace itself as if feeding a display.
+            format.setInteger(MediaFormat.KEY_PRIORITY, 1)
+            format.setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE.toInt())
+
             val mediaCodec = MediaCodec.createDecoderByType(mime)
             codec = mediaCodec
             mediaCodec.configure(format, null, null, 0)
             mediaCodec.start()
 
-            runDecodeLoop(extractor, mediaCodec, startMs * 1_000L, endMs * 1_000L, onImage)
+            runDecodeLoop(extractor, mediaCodec, startMs * 1_000L, endMs * 1_000L, wants, onImage)
         } finally {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
@@ -142,6 +151,7 @@ class FrameSequenceSource(private val videoFile: File) {
         codec: MediaCodec,
         startUs: Long,
         endUs: Long,
+        wants: (timeMs: Long) -> Boolean,
         onImage: (timeMs: Long, image: Image) -> Unit,
     ) {
         val bufferInfo = MediaCodec.BufferInfo()
@@ -184,7 +194,7 @@ class FrameSequenceSource(private val videoFile: File) {
                 val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
                 val inWindow = bufferInfo.size > 0 && presentationUs in startUs..endUs
 
-                if (inWindow) {
+                if (inWindow && wants(presentationUs / 1_000)) {
                     val image = codec.getOutputImage(outputIndex)
                     if (image != null) {
                         try {
@@ -244,23 +254,34 @@ class FrameSequenceSource(private val videoFile: File) {
         val yPlane = image.planes[0]
         val uPlane = image.planes[1]
         val vPlane = image.planes[2]
-        val yBuffer = yPlane.buffer
-        val uBuffer = uPlane.buffer
-        val vBuffer = vPlane.buffer
+        // Whole rows copied out in one bulk get each: three absolute ByteBuffer.get
+        // calls per output pixel were a large share of the pose pass's time.
+        val yRow = ByteArray(yPlane.rowStride)
+        val uRow = ByteArray(uPlane.rowStride)
+        val vRow = ByteArray(vPlane.rowStride)
+        val yPixel = yPlane.pixelStride
+        val uPixel = uPlane.pixelStride
+        val vPixel = vPlane.pixelStride
         for (oy in 0 until height) {
-            val yRow = 2 * oy * yPlane.rowStride
-            val uRow = oy * uPlane.rowStride
-            val vRow = oy * vPlane.rowStride
+            copyRow(yPlane.buffer, 2 * oy * yPlane.rowStride, yRow)
+            copyRow(uPlane.buffer, oy * uPlane.rowStride, uRow)
+            copyRow(vPlane.buffer, oy * vPlane.rowStride, vRow)
             for (ox in 0 until width) {
-                val luma = ((yBuffer.get(yRow + 2 * ox * yPlane.pixelStride).toInt() and 0xFF) - 16).coerceAtLeast(0) * 1192
-                val u = (uBuffer.get(uRow + ox * uPlane.pixelStride).toInt() and 0xFF) - 128
-                val v = (vBuffer.get(vRow + ox * vPlane.pixelStride).toInt() and 0xFF) - 128
+                val luma = ((yRow[2 * ox * yPixel].toInt() and 0xFF) - 16).coerceAtLeast(0) * 1192
+                val u = (uRow[ox * uPixel].toInt() and 0xFF) - 128
+                val v = (vRow[ox * vPixel].toInt() and 0xFF) - 128
                 val r = ((luma + 1634 * v) shr 10).coerceIn(0, 255)
                 val g = ((luma - 833 * v - 400 * u) shr 10).coerceIn(0, 255)
                 val b = ((luma + 2066 * u) shr 10).coerceIn(0, 255)
                 out[oy * width + ox] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
             }
         }
+    }
+
+    /** Copies up to `into.size` bytes starting at [offset]; the last row of a plane can be shorter than its stride. */
+    private fun copyRow(buffer: java.nio.ByteBuffer, offset: Int, into: ByteArray) {
+        buffer.position(offset)
+        buffer.get(into, 0, minOf(into.size, buffer.remaining()))
     }
 
     private fun selectVideoTrack(extractor: MediaExtractor): Int? {

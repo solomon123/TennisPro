@@ -5,6 +5,8 @@ import com.tennispro.core.court.CourtFormat
 import com.tennispro.core.court.CourtPoint
 import com.tennispro.core.court.Homography
 import com.tennispro.core.court.PixelPoint
+import com.tennispro.core.court.ServiceCall
+import com.tennispro.core.court.ServiceLineCall
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.hypot
@@ -28,7 +30,7 @@ sealed interface ServeOutcome {
         val bounce: CourtPoint,
         val launchSpeedMetersPerSecond: Double,
         val errorBandPercent: Double,
-        val inServiceBox: Boolean,
+        val call: ServiceCall,
     ) : ServeOutcome {
         val kmh: Double get() = launchSpeedMetersPerSecond * 3.6
     }
@@ -103,7 +105,8 @@ object ServeFlight {
         )
         val feet = homography.mapToCourt(proposal.server.feet)
         val contactPosition = doubleArrayOf(feet.xMeters.toDouble(), feet.yMeters + CONTACT_AHEAD_OF_FEET_M, CONTACT_HEIGHT_M)
-        val context = Context(frames, blobs, proposal, homography, format, contactPosition, fps, headY)
+        val body = bodyMask(proposal.server, frameHeight = Int.MAX_VALUE)
+        val context = Context(frames, blobs, proposal, homography, format, contactPosition, fps, headY, body)
 
         // Blobs already part of a full-length chain don't seed another: the same
         // flight would otherwise be rebuilt from every one of its points.
@@ -128,6 +131,36 @@ object ServeFlight {
         }
 
         return best?.outcome ?: ServeOutcome.NoFlight("No ball flight found after the swing")
+    }
+
+    /**
+     * The parts of the frame the server covers, for [MotionBlobs]' exclusion —
+     * and for refusing a bounce hidden behind them: the body, full pose width,
+     * from just above the nose down; and the head above that, only as wide as
+     * a head.
+     *
+     * The first cut stopped at 20 px above the nose, leaving the top of the
+     * head unmasked: on a 2026-09-08 serve the ball landed behind the server's
+     * head from the camera's view, the tracker followed the head's own movement
+     * instead, and the serve was called OUT by 1.72 m. Masking the full pose
+     * width that high fixed that but swallowed another serve's toss beside the
+     * head, reading 117 km/h for a 136 km/h serve — hence the narrow head box.
+     */
+    fun bodyMask(server: PoseKeypoints, frameHeight: Int): List<PixelRect> {
+        val neck = max(MIN_NECK_PX, (server.leftShoulder.y + server.rightShoulder.y) / 2.0 - server.nose.y)
+        val body = PixelRect(
+            left = server.box.left - BODY_MARGIN_PX,
+            top = server.nose.y - MIN_NECK_PX,
+            right = server.box.right + BODY_MARGIN_PX,
+            bottom = frameHeight.toDouble(),
+        )
+        val head = PixelRect(
+            left = server.nose.x - HEAD_HALF_WIDTH_PER_NECK * neck,
+            top = server.nose.y - HEAD_ABOVE_NOSE_PER_NECK * neck,
+            right = server.nose.x + HEAD_HALF_WIDTH_PER_NECK * neck,
+            bottom = server.nose.y.toDouble(),
+        )
+        return listOf(body, head)
     }
 
     // ------------------------------------------------------------------ chains
@@ -259,6 +292,7 @@ object ServeFlight {
         val contactPosition: DoubleArray,
         val fps: Double,
         val headY: Double,
+        val body: List<PixelRect>,
     )
 
     private class Evaluation(val rank: Int, val length: Int, val outcome: ServeOutcome) {
@@ -274,8 +308,11 @@ object ServeFlight {
         if (contactMs - c.proposal.racketUpMs !in 0..MAX_RACKET_UP_TO_CONTACT_MS) return null
         val bounceAt = bounceIndex(chain) ?: return null
 
-        val bounceLink = chain[bounceAt]
-        val bounce = c.homography.mapToCourt(PixelPoint(bounceLink.x.toFloat(), bounceLink.y.toFloat()))
+        val bouncePixel = refineBounce(chain, bounceAt, c.frames)
+        // A bounce the server's body hides can't be seen, so it can't be measured
+        // or called: whatever the track did there, it wasn't the ball.
+        if (c.body.any { it.contains(bouncePixel.x, bouncePixel.y) }) return null
+        val bounce = c.homography.mapToCourt(PixelPoint(bouncePixel.x.toFloat(), bouncePixel.y.toFloat()))
         val netY = CourtDimensions.LENGTH_M / 2
 
         if (bounce.yMeters <= netY + NET_MARGIN_M && chain.size >= MIN_NET_FAULT_CHAIN) {
@@ -285,8 +322,8 @@ object ServeFlight {
         val dx = bounce.xMeters - c.contactPosition[0]
         val dy = bounce.yMeters - c.contactPosition[1]
         val distance = sqrt(dx * dx + dy * dy + c.contactPosition[2] * c.contactPosition[2])
-        val bounceMs = c.frames[bounceLink.frame].timeMs
-        val flightSeconds = (bounceMs - contactMs) / 1000.0
+        val bounceMs = bouncePixel.timeMs.toLong()
+        val flightSeconds = (bouncePixel.timeMs - contactMs) / 1000.0
         if (flightSeconds <= 0) return Evaluation(RANK_IMPLAUSIBLE, chain.size, implausible(chain, "non-positive flight time"))
         val launch = launchSpeed(distance, flightSeconds)
         val kmh = launch * 3.6
@@ -303,10 +340,8 @@ object ServeFlight {
             )
         }
 
-        val singlesLeft = if (c.format == CourtFormat.SINGLES) 0.0 else (CourtDimensions.DOUBLES_WIDTH_M - CourtDimensions.SINGLES_WIDTH_M) / 2
-        val farServiceLine = netY + CourtDimensions.SERVICE_LINE_FROM_NET_M
-        val inBox = bounce.yMeters in netY..farServiceLine &&
-            bounce.xMeters in singlesLeft..(singlesLeft + CourtDimensions.SINGLES_WIDTH_M)
+        val (errorX, errorY) = bouncePositionError(c.homography, bouncePixel)
+        val call = ServiceLineCall.call(bounce, serverX = c.contactPosition[0], format = c.format, errorXMeters = errorX, errorYMeters = errorY)
 
         return Evaluation(
             RANK_MEASURED,
@@ -317,9 +352,77 @@ object ServeFlight {
                 bounce = bounce,
                 launchSpeedMetersPerSecond = launch,
                 errorBandPercent = errorBandPercent(flightSeconds, c.fps),
-                inServiceBox = inBox,
+                call = call,
             ),
         )
+    }
+
+    private class BouncePoint(val x: Double, val y: Double, val timeMs: Double)
+
+    /**
+     * The bounce between frames, per docs/ACCURACY.md's service-line method:
+     * fit the track's last few points before the bounce and first few after as
+     * straight lines in time, and take where their vertical positions meet. The
+     * ball touches down between two frames almost every time; snapping to a
+     * frame is up to half a frame's travel off — several centimetres at serve
+     * speed. Falls back to the bounce frame's own point when either side has too
+     * few points, or the lines meet outside the neighbouring frames.
+     */
+    private fun refineBounce(chain: List<Link>, at: Int, frames: List<FrameBlobs>): BouncePoint {
+        val link = chain[at]
+        val fallback = BouncePoint(link.x, link.y, frames[link.frame].timeMs.toDouble())
+        val incoming = chain.subList(max(0, at - BOUNCE_FIT_POINTS), at)
+        val outgoing = chain.subList(at + 1, minOf(chain.size, at + 1 + BOUNCE_FIT_POINTS))
+        if (incoming.size < 2 || outgoing.size < 2) return fallback
+
+        val origin = frames[link.frame].timeMs.toDouble()
+        fun t(l: Link) = frames[l.frame].timeMs - origin
+        val inX = fitLinear(incoming.map { t(it) }, incoming.map { it.x }) ?: return fallback
+        val inY = fitLinear(incoming.map { t(it) }, incoming.map { it.y }) ?: return fallback
+        val outX = fitLinear(outgoing.map { t(it) }, outgoing.map { it.x }) ?: return fallback
+        val outY = fitLinear(outgoing.map { t(it) }, outgoing.map { it.y }) ?: return fallback
+        if (abs(inY[1] - outY[1]) < 1e-9) return fallback
+
+        val meet = (outY[0] - inY[0]) / (inY[1] - outY[1])
+        if (meet < t(chain[at - 1]) || meet > t(chain[at + 1])) return fallback
+        val x = (inX[0] + inX[1] * meet + outX[0] + outX[1] * meet) / 2
+        return BouncePoint(x, inY[0] + inY[1] * meet, origin + meet)
+    }
+
+    /** Least-squares `a + b t`, or null if all [t] are equal. */
+    private fun fitLinear(t: List<Double>, v: List<Double>): DoubleArray? {
+        val n = t.size
+        val meanT = t.sum() / n
+        val meanV = v.sum() / n
+        var stt = 0.0
+        var stv = 0.0
+        for (i in 0 until n) {
+            stt += (t[i] - meanT) * (t[i] - meanT)
+            stv += (t[i] - meanT) * (v[i] - meanV)
+        }
+        if (stt < 1e-12) return null
+        val slope = stv / stt
+        return doubleArrayOf(meanV - slope * meanT, slope)
+    }
+
+    /**
+     * How far the bounce could be off, across (x) and along (y) the court: the
+     * ball's pixel uncertainty — its centroid plus the calibration's corners —
+     * scaled by how much court one pixel covers right there, plus what the
+     * between-frames fit leaves. Far down the court from a behind-baseline
+     * camera a pixel spans several times more court lengthwise than across.
+     */
+    private fun bouncePositionError(homography: Homography, at: BouncePoint): Pair<Double, Double> {
+        val u = at.x.toFloat()
+        val v = at.y.toFloat()
+        val here = homography.mapToCourt(PixelPoint(u, v))
+        val stepU = homography.mapToCourt(PixelPoint(u + 1, v))
+        val stepV = homography.mapToCourt(PixelPoint(u, v + 1))
+        val xPerPixel = hypot((stepU.xMeters - here.xMeters).toDouble(), (stepV.xMeters - here.xMeters).toDouble())
+        val yPerPixel = hypot((stepU.yMeters - here.yMeters).toDouble(), (stepV.yMeters - here.yMeters).toDouble())
+        fun combined(perPixel: Double) =
+            sqrt((BOUNCE_PIXEL_ERROR * perPixel) * (BOUNCE_PIXEL_ERROR * perPixel) + BOUNCE_FIT_ERROR_M * BOUNCE_FIT_ERROR_M)
+        return combined(xPerPixel) to combined(yPerPixel)
     }
 
     private fun implausible(chain: List<Link>, why: String) =
@@ -392,6 +495,13 @@ object ServeFlight {
 
     // ---------------------------------------------------------------- constants
 
+    private const val BODY_MARGIN_PX = 40.0
+    private const val MIN_NECK_PX = 20.0
+
+    /** The crown sits ~1.5 nose-to-shoulder distances above the nose; a head is about as wide as that. */
+    private const val HEAD_ABOVE_NOSE_PER_NECK = 1.5
+    private const val HEAD_HALF_WIDTH_PER_NECK = 0.9
+
     private const val MIN_CHAIN = 12
     private const val MIN_NET_FAULT_CHAIN = 20
     private const val HEAD_POINTS = 15
@@ -411,6 +521,16 @@ object ServeFlight {
     private const val MIN_BOUNCE_KINK_PX = 2.0
     private const val BOUNCE_SEARCH_BEFORE = 2
     private const val BOUNCE_SEARCH_AFTER = 10
+    private const val BOUNCE_FIT_POINTS = 3
+
+    /**
+     * The bounce's pixel uncertainty: ~1.5 px of blob centroid and ~2 px of
+     * calibration corner error, in quadrature.
+     */
+    private const val BOUNCE_PIXEL_ERROR = 2.5
+
+    /** What the between-frames bounce fit leaves on top of that. */
+    private const val BOUNCE_FIT_ERROR_M = 0.03
 
     private const val MAX_RACKET_UP_TO_CONTACT_MS = 800L
     private const val CONTACT_LOOKBACK_FRAMES = 12
