@@ -55,4 +55,4 @@ a new date above.
 
 ## Contact
 
-Questions about this policy: [CONTACT EMAIL]
+Questions about this policy: [ssoollit@gmail.com](mailto:ssoollit@gmail.com)

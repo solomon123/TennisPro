@@ -101,8 +101,7 @@ both devices, or debug builds on both.
 
 **Privacy policy URL**: the rendered
 [`docs/PRIVACY.md`](https://github.com/solomon123/TennisPro/blob/claude/tennis-match-monitor-63q3fy/docs/PRIVACY.md)
-on GitHub (or the same file on the default branch once merged). Fill in the contact
-email in it first.
+on GitHub (or the same file on the default branch once merged).
 
 **Ads**: No ads.
 
@@ -179,7 +178,8 @@ GOOD TO KNOW
 • Recordings use a lot of storage; delete old ones from the app.
 ```
 
-**Category**: Sports. **Contact email**: required, shown publicly.
+**Category**: Sports. **Contact email** (required, shown publicly): `ssoollit@gmail.com`,
+the same address as the privacy policy.
 
 **Graphics** (in [`docs/play/`](play/)):
 - App icon: `icon-512.png` (512×512)
