@@ -160,7 +160,9 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
     }
 }
 
-private fun statusIdleText(text: String) = text.ifBlank { "Waiting for phone" }
+// Tells the player what to do next rather than what the watch is doing: nothing
+// shows here until a match (or recording) is started from the phone.
+private fun statusIdleText(text: String) = text.ifBlank { "Start the match on the phone" }
 
 /**
  * The face while a match is in progress: current game score big, games and

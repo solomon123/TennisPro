@@ -1,6 +1,7 @@
 package com.tennispro.phone.ui
 
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
@@ -17,19 +19,25 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.tennispro.core.scoring.ScoreFormat
 import com.tennispro.core.scoring.projection
 import com.tennispro.phone.calibration.CalibrationStorage
@@ -48,6 +56,12 @@ import kotlinx.coroutines.withContext
  * recordings list filling the right. Stacked in one column, the list started
  * below the bottom of a landscape phone screen — per-recording delete existed
  * but was never visible (field-test feedback, 2026-09-10).
+ *
+ * The controls are ranked, not laid out as a wall of equal buttons (user
+ * feedback, same day): the one thing done every session — Record — is the big
+ * button; the other everyday screens are a list, each showing its own state;
+ * setup that's touched rarely (watch check, camera facing, refresh) lives in
+ * the ⋮ menu.
  */
 @Composable
 fun HomeScreen(
@@ -68,6 +82,8 @@ fun HomeScreen(
     var freeBytes by remember { mutableStateOf(0L) }
     var reloadToken by remember { mutableStateOf(0) }
     var calibrated by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     // Same fallback-flow pattern as RecordScreen: a plain val, not `by`, and a
     // remembered flow so collectAsState always has something to observe even
@@ -98,94 +114,98 @@ fun HomeScreen(
                 .weight(1f)
                 .fillMaxHeight()
                 .verticalScroll(rememberScrollState())
-                .padding(20.dp),
+                .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 20.dp),
         ) {
-            Text("TennisPro", style = MaterialTheme.typography.headlineMedium)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Recording, scoring, and a watch link",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            Spacer(Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("TennisPro", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
+                Box {
+                    TextButton(onClick = { menuOpen = true }) { Text("⋮", fontSize = 24.sp) }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Watch check") },
+                            onClick = {
+                                menuOpen = false
+                                onWatchCheck()
+                            },
+                        )
+                        HorizontalDivider()
+                        CameraFacingMenuItem("Camera: back", CameraFacing.BACK, facing, enabled = !recording) {
+                            menuOpen = false
+                            service?.switchCamera(CameraFacing.BACK)
+                        }
+                        CameraFacingMenuItem("Camera: front", CameraFacing.FRONT, facing, enabled = !recording) {
+                            menuOpen = false
+                            service?.switchCamera(CameraFacing.FRONT)
+                        }
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("Refresh") },
+                            onClick = {
+                                menuOpen = false
+                                reloadToken++
+                                scope.launch { diagnostics.refresh() }
+                            },
+                        )
+                    }
+                }
+            }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val watchConnected = diagnostics.watches.isNotEmpty()
                 Chip(
                     text = if (watchConnected) "Watch connected" else "No watch",
-                    tint = if (watchConnected) {
-                        MaterialTheme.colorScheme.secondary
-                    } else {
-                        MaterialTheme.colorScheme.error
-                    },
+                    tint = if (watchConnected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error,
                 )
                 Spacer(Modifier.width(8.dp))
                 Chip(
                     text = if (calibrated) "Calibrated" else "Not calibrated",
                     tint = if (calibrated) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error,
                 )
-            }
-            activeMatch?.let { match ->
-                Spacer(Modifier.height(8.dp))
-                Chip(
-                    text = "Scoring: ${ScoreFormat.summary(match.projection())}",
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Camera facing the court:",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.width(8.dp))
-                CameraFacingChip("Back", selected = facing == CameraFacing.BACK, enabled = !recording) {
-                    service?.switchCamera(CameraFacing.BACK)
-                }
-                Spacer(Modifier.width(8.dp))
-                CameraFacingChip("Front", selected = facing == CameraFacing.FRONT, enabled = !recording) {
-                    service?.switchCamera(CameraFacing.FRONT)
+                if (facing == CameraFacing.FRONT) {
+                    Spacer(Modifier.width(8.dp))
+                    Chip(text = "Front camera", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             if (facing == CameraFacing.FRONT) {
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(
-                    "Front camera: verify recorded video isn't mirrored on this device before " +
-                        "trusting it — calibrating from Replay's \"Calibrate from this frame\" " +
-                        "(the actual recorded file) is the safer choice here over a live freeze.",
+                    "Front camera: check a recording isn't mirrored before trusting it — " +
+                        "calibrating from Replay's \"Calibrate from this frame\" uses the actual recorded file.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(14.dp))
 
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = onRecord) { Text("Record a match") }
-                OutlinedButton(onClick = onScore) {
-                    Text(if (activeMatch != null) "Resume score" else "Score match")
-                }
+            Button(
+                onClick = onRecord,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+            ) {
+                Text(if (recording) "●  Recording — open" else "●  Record a match", style = MaterialTheme.typography.titleMedium)
             }
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(6.dp))
 
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = onCalibrate) {
-                    Text(if (calibrated) "Recalibrate court" else "Calibrate court")
-                }
-                OutlinedButton(onClick = onReplay) { Text("Replay") }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = onWatchCheck) { Text("Watch check") }
-                OutlinedButton(onClick = { reloadToken++ }) { Text("Refresh") }
-            }
+            HomeRow(
+                title = if (activeMatch != null) "Resume score" else "Score match",
+                detail = activeMatch?.let { ScoreFormat.summary(it.projection()) } ?: "Score from your watch",
+                onClick = onScore,
+            )
+            HorizontalDivider()
+            HomeRow(
+                title = "Replay",
+                detail = "Watch recordings, serves and line calls",
+                onClick = onReplay,
+            )
+            HorizontalDivider()
+            HomeRow(
+                title = if (calibrated) "Recalibrate court" else "Calibrate court",
+                detail = if (calibrated) "Court saved for this mount" else "Needed for line calls",
+                onClick = onCalibrate,
+            )
         }
 
         RecordingList(
@@ -206,11 +226,29 @@ fun HomeScreen(
     }
 }
 
+/** One everyday destination: its name, a line of its current state, and a chevron. */
 @Composable
-private fun CameraFacingChip(label: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    if (selected) {
-        Button(onClick = onClick, enabled = enabled) { Text(label) }
-    } else {
-        OutlinedButton(onClick = onClick, enabled = enabled) { Text(label) }
+private fun HomeRow(title: String, detail: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 9.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text("›", fontSize = 26.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
+}
+
+@Composable
+private fun CameraFacingMenuItem(label: String, value: CameraFacing, current: CameraFacing, enabled: Boolean, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text(if (value == current) "✓  $label" else "     $label") },
+        onClick = onClick,
+        enabled = enabled && value != current,
+    )
 }
