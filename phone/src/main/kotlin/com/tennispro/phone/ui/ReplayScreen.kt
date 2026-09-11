@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -82,6 +83,7 @@ private enum class ReplayMode { SCRUB, PLAY }
 fun ReplayScreen(
     matchStorage: MatchStorage,
     calibrationStorage: CalibrationStorage,
+    recordingSessionId: String?,
     onBack: () -> Unit,
 ) {
     var sessions by remember { mutableStateOf<List<MatchSession>>(emptyList()) }
@@ -91,8 +93,9 @@ fun ReplayScreen(
     var positionMs by remember(selected) { mutableLongStateOf(0L) }
     var calibrationFrame by remember { mutableStateOf<Bitmap?>(null) }
     var calibrationVersion by remember { mutableIntStateOf(0) }
+    var reloadToken by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(Unit) { sessions = matchStorage.listSessions() }
+    LaunchedEffect(reloadToken) { sessions = withContext(Dispatchers.IO) { matchStorage.listSessions() } }
 
     val frameToCalibrate = calibrationFrame
     if (frameToCalibrate != null) {
@@ -126,7 +129,19 @@ fun ReplayScreen(
 
         val session = selected
         if (session == null) {
-            SessionPicker(sessions, onSelect = { selected = it })
+            RecordingList(
+                sessions = sessions,
+                storage = matchStorage,
+                recordingSessionId = recordingSessionId,
+                onChanged = { reloadToken++ },
+                emptyText = "No recordings yet. Record a match first, then come back here to step " +
+                    "through its frames.",
+                onOpen = { selected = it },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.End + WindowInsetsSides.Bottom))
+                    .padding(horizontal = 16.dp),
+            )
         } else {
             SessionReplay(
                 session = session,
@@ -136,55 +151,12 @@ fun ReplayScreen(
                 onPositionChange = { positionMs = it },
                 calibrationVersion = calibrationVersion,
                 onCalibrate = { calibrationFrame = it },
+                recordingSessionId = recordingSessionId,
+                onDeleted = {
+                    selected = null
+                    reloadToken++
+                },
             )
-        }
-    }
-}
-
-@Composable
-private fun SessionPicker(sessions: List<MatchSession>, onSelect: (MatchSession) -> Unit) {
-    if (sessions.isEmpty()) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(32.dp),
-        ) {
-            Text(
-                "No recordings yet. Record a match first, then come back here to step " +
-                    "through its frames.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        return
-    }
-
-    LazyColumn(
-        Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        items(sessions, key = { it.meta.id }) { session ->
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                onClick = { onSelect(session) },
-            ) {
-                Column(Modifier.padding(14.dp)) {
-                    Text(session.meta.id, style = MaterialTheme.typography.titleSmall)
-                    val details = listOfNotNull(
-                        session.meta.durationMs?.let { formatElapsed(it) },
-                        session.serves?.let { servesSummary(it) },
-                    )
-                    if (details.isNotEmpty()) {
-                        Text(
-                            details.joinToString(" · "),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
         }
     }
 }
@@ -198,6 +170,8 @@ private fun SessionReplay(
     onPositionChange: (Long) -> Unit,
     calibrationVersion: Int,
     onCalibrate: (Bitmap) -> Unit,
+    recordingSessionId: String?,
+    onDeleted: () -> Unit,
 ) {
     val frameSource = remember(session) { runCatching { VideoFrameSource(matchStorage.videoFileFor(session)) }.getOrNull() }
     DisposableEffect(frameSource) { onDispose { frameSource?.close() } }
@@ -220,8 +194,14 @@ private fun SessionReplay(
     }
 
     if (frameSource == null) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        // Still deletable: an unreadable file is exactly the recording someone wants gone.
+        Column(
+            Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
             Text("Could not open this recording's video", style = MaterialTheme.typography.bodyMedium)
+            if (session.meta.id != recordingSessionId) DeleteRecordingButton(session, matchStorage, onDeleted)
         }
         return
     }
@@ -300,10 +280,16 @@ private fun SessionReplay(
                 ReplayModeChip("Play", selected = mode == ReplayMode.PLAY) { mode = ReplayMode.PLAY }
             }
 
-            ServesSection(session, matchStorage, onSeek = {
-                mode = ReplayMode.SCRUB
-                onPositionChange(it)
-            })
+            ServesSection(
+                session = session,
+                matchStorage = matchStorage,
+                recordingSessionId = recordingSessionId,
+                onSeek = {
+                    mode = ReplayMode.SCRUB
+                    onPositionChange(it)
+                },
+                onDeleted = onDeleted,
+            )
 
             if (mode == ReplayMode.SCRUB) {
                 OutlinedButton(
@@ -325,7 +311,13 @@ private val REPLAY_PANEL_WIDTH = 280.dp
  * recordings made before that, or a scan that didn't get to run.
  */
 @Composable
-private fun ServesSection(session: MatchSession, matchStorage: MatchStorage, onSeek: (Long) -> Unit) {
+private fun ServesSection(
+    session: MatchSession,
+    matchStorage: MatchStorage,
+    recordingSessionId: String?,
+    onSeek: (Long) -> Unit,
+    onDeleted: () -> Unit,
+) {
     val context = LocalContext.current
     val scanState by ServeScanService.state.collectAsState()
     val scanning = scanState.isScanning(session.meta.id)
@@ -348,8 +340,12 @@ private fun ServesSection(session: MatchSession, matchStorage: MatchStorage, onS
                 Text("Finding serves…$percent", style = MaterialTheme.typography.bodySmall)
             }
 
-            result == null -> OutlinedButton(onClick = { ServeScanService.enqueue(context, session.meta.id) }) {
-                Text("Find serves")
+            result == null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = { ServeScanService.enqueue(context, session.meta.id) }) {
+                    Text("Find serves")
+                }
+                Spacer(Modifier.width(8.dp))
+                if (session.meta.id != recordingSessionId) DeleteRecordingButton(session, matchStorage, onDeleted)
             }
 
             else -> {
@@ -376,7 +372,10 @@ private fun ServesSection(session: MatchSession, matchStorage: MatchStorage, onS
                         }
                     }
                 }
-                TextButton(onClick = { ServeScanService.enqueue(context, session.meta.id) }) { Text("Scan again") }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { ServeScanService.enqueue(context, session.meta.id) }) { Text("Scan again") }
+                    if (session.meta.id != recordingSessionId) DeleteRecordingButton(session, matchStorage, onDeleted)
+                }
             }
         }
     }
@@ -384,12 +383,49 @@ private fun ServesSection(session: MatchSession, matchStorage: MatchStorage, onS
 
 private const val SEEK_LEAD_MS = 300L
 
-private fun servesSummary(serves: SessionServes): String {
-    if (serves.error != null) return "Serve scan didn't run"
-    val count = serves.serves.size
-    if (count == 0) return "No serves found"
-    val fastest = serves.serves.mapNotNull { it.speedKmh }.maxOrNull()
-    return "$count serve${if (count == 1) "" else "s"}" + (fastest?.let { " · fastest ${it.roundToInt()} km/h" } ?: "")
+/**
+ * Deletes the recording that's open, after confirming. Not offered while a
+ * scan is reading the file — [ServesSection] shows scan progress instead of
+ * any buttons then — or while it's still being recorded.
+ */
+@Composable
+private fun DeleteRecordingButton(session: MatchSession, matchStorage: MatchStorage, onDeleted: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var confirming by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
+    var sizeBytes by remember { mutableLongStateOf(0L) }
+
+    TextButton(onClick = {
+        confirming = true
+        scope.launch { sizeBytes = withContext(Dispatchers.IO) { session.sizeBytes } }
+    }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { if (!deleting) confirming = false },
+            title = { Text("Delete this recording?") },
+            text = {
+                Text("${startedLabel(session)} — frees ${formatBytes(sizeBytes)}, with any serves and marked moments found in it. This cannot be undone.")
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !deleting,
+                    onClick = {
+                        deleting = true
+                        scope.launch {
+                            withContext(Dispatchers.IO) { matchStorage.deleteSession(session) }
+                            deleting = false
+                            confirming = false
+                            onDeleted()
+                        }
+                    },
+                ) { Text(if (deleting) "Deleting…" else "Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(enabled = !deleting, onClick = { confirming = false }) { Text("Keep") }
+            },
+        )
+    }
 }
 
 @Composable

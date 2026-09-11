@@ -12,7 +12,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.tennispro.phone.TennisProApp
+import androidx.compose.runtime.collectAsState
+import com.tennispro.phone.camera.CaptureState
 import com.tennispro.phone.camera.RecordingService
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /** A handful of screens; a navigation library would be more moving parts than routes. */
 enum class Screen { HOME, RECORD, WATCH_CHECK, SCORE, CALIBRATE, REPLAY }
@@ -31,6 +34,9 @@ fun AppRoot(
     // MatchController listening for watch gestures and restores any in-progress
     // match as soon as the app is up, not on first visit to the Score screen.
     val matchController = app.matchController
+    // Which recording is being written, so no screen offers to delete it mid-recording.
+    val fallbackCaptureState = remember { MutableStateFlow<CaptureState>(CaptureState.Initialising) }
+    val captureState = (service?.state ?: fallbackCaptureState).collectAsState().value
 
     Surface(color = MaterialTheme.colorScheme.background) {
         Box(Modifier.fillMaxSize()) {
@@ -77,6 +83,7 @@ fun AppRoot(
                 Screen.REPLAY -> ReplayScreen(
                     matchStorage = app.storage,
                     calibrationStorage = app.calibrationStorage,
+                    recordingSessionId = (captureState as? CaptureState.Recording)?.session?.meta?.id,
                     onBack = { screen = Screen.HOME },
                 )
             }

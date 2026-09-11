@@ -27,8 +27,8 @@ Configured for this setup — change the assumptions in the docs if yours differ
   correctly; see [ARCHITECTURE.md](docs/ARCHITECTURE.md#calibration) for a real
   device-specific rotation bug this surfaced and how it's handled.
 - **Format:** singles first, doubles geometry kept configurable.
-- **Storage:** raw footage kept in full, deletable per-recording or all at once
-  from the home screen.
+- **Storage:** raw footage kept in full. Delete recordings one at a time, or tap
+  **Select** (or long-press one) to delete several — from Home or Replay.
 
 Mount the phone in landscape, frame the whole court including both service boxes,
 and **do not move it once recording starts** — everything downstream depends on the
