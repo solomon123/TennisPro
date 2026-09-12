@@ -2,13 +2,13 @@ package com.tennispro.phone.vision
 
 import android.content.Context
 import android.util.Log
+import com.tennispro.core.court.CalibrationPoints
 import com.tennispro.core.court.CourtFormat
 import com.tennispro.core.court.Homography
 import com.tennispro.core.vision.CourtLineDetector
 import com.tennispro.core.vision.FrameBlobs
 import com.tennispro.core.vision.GrayscaleFrame
 import com.tennispro.core.vision.MotionBlobs
-import com.tennispro.core.vision.PixelRect
 import com.tennispro.core.vision.PoseSample
 import com.tennispro.core.vision.ServeFlight
 import com.tennispro.core.vision.ServeOutcome
@@ -30,7 +30,8 @@ import kotlin.coroutines.cancellation.CancellationException
  * 1. **Court.** Found in the recording itself by [CourtLineDetector], not
  *    taken from the saved calibration: the phone moved twice inside one
  *    2026-09-08 recording. Found again at every serve for the same reason; the
- *    saved calibration is only a fallback when detection fails.
+ *    saved calibration is only a fallback when detection fails. The court each
+ *    serve was measured against is saved with it, so Replay can draw it.
  * 2. **Pose pass.** MediaPipe Pose on ~10 frames a second across the whole
  *    recording; [ServeProposals] picks out serve-shaped moments.
  * 3. **Flight pass.** For each proposal, every frame from just before the
@@ -45,6 +46,9 @@ class ServeScanner(
     private val storage: MatchStorage,
     private val calibrationStorage: CalibrationStorage,
 ) {
+
+    /** Court corners in the recording's pixel space, and the homography built from them. */
+    private class Court(val points: CalibrationPoints, val homography: Homography)
 
     fun scan(session: MatchSession, onProgress: (Float) -> Unit, isCancelled: () -> Boolean): SessionServes {
         val source = FrameSequenceSource(storage.videoFileFor(session))
@@ -72,7 +76,7 @@ class ServeScanner(
             }
         }
 
-        val proposals = ServeProposals.find(samples, sessionCourt, width, height)
+        val proposals = ServeProposals.find(samples, sessionCourt.homography, width, height)
         Log.i(
             TAG,
             "${session.meta.id}: ${samples.size} pose samples in %.1f s (%.1f s pose inference on %s), ${proposals.size} serve proposals"
@@ -82,7 +86,7 @@ class ServeScanner(
         val serves = proposals.mapIndexedNotNull { index, proposal ->
             if (isCancelled()) throw CancellationException("Serve scan cancelled")
             val measureStart = System.nanoTime()
-            val outcome = measure(source, proposal, sessionCourt, format, width, height, info.durationMs)
+            val (outcome, court) = measure(source, proposal, sessionCourt, format, width, height, info.durationMs)
             onProgress(POSE_PASS_SHARE + (1 - POSE_PASS_SHARE) * (index + 1) / proposals.size)
             Log.i(TAG, "${session.meta.id}: proposal at ${proposal.racketUpMs} ms -> $outcome (%.1f s)".format((System.nanoTime() - measureStart) / 1e9))
             when (outcome) {
@@ -96,35 +100,37 @@ class ServeScanner(
                     callEdge = outcome.call.edge.name,
                     bounceXMeters = outcome.bounce.xMeters.toDouble(),
                     bounceYMeters = outcome.bounce.yMeters.toDouble(),
+                    court = court.points,
                 )
-                is ServeOutcome.NetFault -> DetectedServe(contactMs = outcome.contactMs, netFault = true)
+                is ServeOutcome.NetFault -> DetectedServe(contactMs = outcome.contactMs, netFault = true, court = court.points)
                 is ServeOutcome.NoFlight -> null
             }
         }
         onProgress(1f)
-        return SessionServes(scannedAtEpochMs = System.currentTimeMillis(), serves = serves)
+        return SessionServes(scannedAtEpochMs = System.currentTimeMillis(), serves = serves, court = sessionCourt.points)
     }
 
+    /** The outcome, and the court it was measured against. */
     private fun measure(
         source: FrameSequenceSource,
         proposal: ServeProposal,
-        sessionCourt: Homography,
+        sessionCourt: Court,
         format: CourtFormat,
         width: Int,
         height: Int,
         durationMs: Long,
-    ): ServeOutcome {
+    ): Pair<ServeOutcome, Court> {
         val startMs = (proposal.racketUpMs - WINDOW_BEFORE_MS).coerceAtLeast(0)
         val endMs = (proposal.racketUpMs + WINDOW_AFTER_MS).coerceAtMost(durationMs)
-        if (endMs <= startMs) return ServeOutcome.NoFlight("Serve too close to the end of the recording")
+        if (endMs <= startMs) return ServeOutcome.NoFlight("Serve too close to the end of the recording") to sessionCourt
 
         val body = ServeFlight.bodyMask(proposal.server, height)
 
         val frames = ArrayList<FrameBlobs>()
-        var court: Homography? = null
+        var court: Court? = null
         val window = ArrayDeque<Pair<Long, GrayscaleFrame>>(3)
         source.decodeRange(startMs, endMs) { timeMs, frame ->
-            if (court == null) court = CourtLineDetector.detect(frame)?.let { Homography.fromCalibration(it.toCalibration(format, width, height)) }
+            if (court == null) court = courtFrom(CourtLineDetector.detect(frame)?.toCalibration(format, width, height))
             window.addLast(timeMs to frame)
             if (window.size == 3) {
                 val (_, prev) = window[0]
@@ -134,27 +140,31 @@ class ServeScanner(
                 window.removeFirst()
             }
         }
-        if (frames.size < 2) return ServeOutcome.NoFlight("Could not decode frames around the serve")
+        val used = court ?: sessionCourt
+        if (frames.size < 2) return ServeOutcome.NoFlight("Could not decode frames around the serve") to used
 
         val fps = 1000.0 * (frames.size - 1) / (frames.last().timeMs - frames.first().timeMs).coerceAtLeast(1)
-        return ServeFlight.analyze(frames, proposal, court ?: sessionCourt, format, fps)
+        return ServeFlight.analyze(frames, proposal, used.homography, format, fps) to used
     }
 
-    private fun detectCourt(source: FrameSequenceSource, atMs: Long, format: CourtFormat): Homography? {
-        var homography: Homography? = null
+    private fun detectCourt(source: FrameSequenceSource, atMs: Long, format: CourtFormat): Court? {
+        var court: Court? = null
         runCatching {
             source.decodeRange(atMs, atMs + COURT_FRAME_SPAN_MS) { _, frame ->
-                if (homography == null) {
-                    homography = CourtLineDetector.detect(frame)
-                        ?.let { Homography.fromCalibration(it.toCalibration(format, frame.width, frame.height)) }
+                if (court == null) {
+                    court = courtFrom(CourtLineDetector.detect(frame)?.toCalibration(format, frame.width, frame.height))
                 }
             }
         }.onFailure { Log.w(TAG, "Court detection failed", it) }
-        return homography
+        return court
     }
 
-    private fun savedCalibration(width: Int, height: Int): Homography? =
-        calibrationStorage.load()?.scaledTo(width, height)?.let { Homography.fromCalibration(it) }
+    private fun savedCalibration(width: Int, height: Int): Court? =
+        courtFrom(calibrationStorage.load()?.scaledTo(width, height))
+
+    /** Null when there are no corners, or they're too degenerate to build a homography from. */
+    private fun courtFrom(points: CalibrationPoints?): Court? =
+        points?.let { p -> Homography.fromCalibration(p)?.let { Court(p, it) } }
 
     private fun failed(reason: String) =
         SessionServes(scannedAtEpochMs = System.currentTimeMillis(), serves = emptyList(), error = reason)

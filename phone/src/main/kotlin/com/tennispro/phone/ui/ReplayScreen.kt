@@ -1,8 +1,10 @@
 package com.tennispro.phone.ui
 
 import android.graphics.Bitmap
+import android.media.MediaPlayer
 import android.net.Uri
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.MediaController
@@ -54,19 +56,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.tennispro.core.court.CalibrationPoints
 import com.tennispro.core.court.CourtDimensions
 import com.tennispro.core.court.Homography
 import com.tennispro.phone.calibration.CalibrationStorage
 import com.tennispro.phone.replay.VideoFrameSource
+import com.tennispro.phone.storage.DetectedServe
 import com.tennispro.phone.storage.MatchSession
 import com.tennispro.phone.storage.MatchStorage
 import com.tennispro.phone.storage.SessionServes
 import com.tennispro.phone.vision.ServeScanService
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.key
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /** Scrubbing (frame-accurate, for calibration QA) vs. actually watching the match back. */
@@ -178,14 +184,30 @@ private fun SessionReplay(
 
     var mode by remember { mutableStateOf(ReplayMode.SCRUB) }
     var frame by remember(frameSource) { mutableStateOf<Bitmap?>(null) }
+    // Where Play starts: a moment before the last serve tapped, or the beginning.
+    var playFromMs by remember(session) { mutableLongStateOf(0L) }
+    // Bumped by every serve tap, so tapping another serve while playing restarts the player there.
+    var playRequest by remember(session) { mutableIntStateOf(0) }
+
+    val scanState by ServeScanService.state.collectAsState()
+    val scanning = scanState.isScanning(session.meta.id)
+    var serves by remember(session) { mutableStateOf(session.serves) }
+
+    // Pick up the result file once this session's scan finishes.
+    LaunchedEffect(scanning) {
+        if (!scanning) {
+            serves = withContext(Dispatchers.IO) { matchStorage.findSession(session.meta.id)?.serves }
+        }
+    }
 
     // Re-read whenever a calibration is saved, so saving one from this very
     // screen (via "Calibrate from this frame" below) updates the overlay
     // immediately rather than only after leaving and returning.
     val calibration = remember(calibrationVersion) { calibrationStorage.load() }
-    val homography = remember(calibration) { calibration?.let { Homography.fromCalibration(it) } }
-    val courtWidthM = remember(calibration) {
-        (calibration?.format?.let { CourtDimensions.widthFor(it) } ?: CourtDimensions.SINGLES_WIDTH_M).toFloat()
+    val overlay = remember(serves, positionMs, calibration) { overlayCourt(serves, positionMs, calibration) }
+    val homography = remember(overlay) { overlay?.points?.let { Homography.fromCalibration(it) } }
+    val courtWidthM = remember(overlay) {
+        (overlay?.points?.format?.let { CourtDimensions.widthFor(it) } ?: CourtDimensions.SINGLES_WIDTH_M).toFloat()
     }
 
     LaunchedEffect(frameSource, positionMs) {
@@ -217,16 +239,19 @@ private fun SessionReplay(
                 .fillMaxHeight(),
         ) {
             when (mode) {
-                ReplayMode.PLAY -> VideoPlayer(
-                    videoFile = matchStorage.videoFileFor(session),
-                    // Bottom padding: without it the video area runs flush to the
-                    // screen edge, so MediaController's floating play/pause/seek bar
-                    // has nowhere to sit but on top of the video itself.
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(bottom = 42.dp),
-                )
+                ReplayMode.PLAY -> key(playRequest) {
+                    VideoPlayer(
+                        videoFile = matchStorage.videoFileFor(session),
+                        startAtMs = playFromMs,
+                        // Bottom padding: without it the video area runs flush to the
+                        // screen edge, so MediaController's floating play/pause/seek bar
+                        // has nowhere to sit but on top of the video itself.
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(bottom = 42.dp),
+                    )
+                }
 
                 ReplayMode.SCRUB -> {
                     Box(
@@ -282,11 +307,15 @@ private fun SessionReplay(
 
             ServesSection(
                 session = session,
+                serves = serves,
                 matchStorage = matchStorage,
                 recordingSessionId = recordingSessionId,
-                onSeek = {
-                    mode = ReplayMode.SCRUB
-                    onPositionChange(it)
+                onPlay = { serve ->
+                    playFromMs = (serve.contactMs - PLAY_LEAD_MS).coerceAtLeast(0)
+                    playRequest++
+                    mode = ReplayMode.PLAY
+                    // So Scrub afterwards shows this serve, with the court it was measured against.
+                    onPositionChange((serve.contactMs - SEEK_LEAD_MS).coerceAtLeast(0))
                 },
                 onDeleted = onDeleted,
             )
@@ -297,6 +326,9 @@ private fun SessionReplay(
                     enabled = currentFrame != null,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Calibrate from this frame") }
+                overlay?.let {
+                    Text(it.label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
     }
@@ -306,29 +338,22 @@ private val REPLAY_PANEL_WIDTH = 280.dp
 
 /**
  * The serves [com.tennispro.phone.vision.ServeScanner] found in this
- * recording, with speeds, each one a shortcut to its moment in the scrubber.
- * Scanning starts on its own when a recording finishes; "Find serves" is for
- * recordings made before that, or a scan that didn't get to run.
+ * recording, with speeds; tapping one plays that serve. Scanning starts on its
+ * own when a recording finishes; "Find serves" is for recordings made before
+ * that, or a scan that didn't get to run.
  */
 @Composable
 private fun ServesSection(
     session: MatchSession,
+    serves: SessionServes?,
     matchStorage: MatchStorage,
     recordingSessionId: String?,
-    onSeek: (Long) -> Unit,
+    onPlay: (DetectedServe) -> Unit,
     onDeleted: () -> Unit,
 ) {
     val context = LocalContext.current
     val scanState by ServeScanService.state.collectAsState()
     val scanning = scanState.isScanning(session.meta.id)
-    var serves by remember(session) { mutableStateOf(session.serves) }
-
-    // Pick up the result file once this session's scan finishes.
-    LaunchedEffect(scanning) {
-        if (!scanning) {
-            serves = withContext(Dispatchers.IO) { matchStorage.findSession(session.meta.id)?.serves }
-        }
-    }
 
     Column {
         val result = serves
@@ -362,12 +387,11 @@ private fun ServesSection(
                                 serve.speedKmh != null -> "${serve.speedKmh.roundToInt()} km/h" + (callLabel(serve)?.let { " · $it" } ?: "")
                                 else -> "serve"
                             }
-                            // A moment before contact, so the scrubbed frame shows the swing.
                             OutlinedButton(
-                                onClick = { onSeek((serve.contactMs - SEEK_LEAD_MS).coerceAtLeast(0)) },
+                                onClick = { onPlay(serve) },
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
-                                Text("${formatElapsed(serve.contactMs)} · $label")
+                                Text("▶ ${formatElapsed(serve.contactMs)} · $label")
                             }
                         }
                     }
@@ -381,7 +405,34 @@ private fun ServesSection(
     }
 }
 
+/** Where Scrub lands after a serve is tapped: a moment before contact, so the frame shows the swing. */
 private const val SEEK_LEAD_MS = 300L
+
+/** Where playback of a tapped serve starts: before the toss, so the whole serve plays. */
+private const val PLAY_LEAD_MS = 2_000L
+
+/** The court lines Replay draws, and where they came from. */
+private class OverlayCourt(val points: CalibrationPoints, val label: String)
+
+/**
+ * The court the scan measured the nearest serve against, found in the video
+ * itself; failing that, the one found near the recording's start; failing that
+ * (a recording never scanned), the saved calibration. The saved one belongs to
+ * wherever the phone was when it was made: on 2026-09-11 that was before the
+ * phone was hung on the fence, and its grid landed far off the court.
+ */
+private fun overlayCourt(serves: SessionServes?, positionMs: Long, saved: CalibrationPoints?): OverlayCourt? {
+    val nearest = serves?.serves
+        ?.filter { it.court != null }
+        ?.minByOrNull { abs(it.contactMs - positionMs) }
+    val sessionCourt = serves?.court
+    return when {
+        nearest?.court != null -> OverlayCourt(nearest.court, "Court lines as found at the ${formatElapsed(nearest.contactMs)} serve")
+        sessionCourt != null -> OverlayCourt(sessionCourt, "Court lines as found in this recording")
+        saved != null -> OverlayCourt(saved, "Court lines from the saved calibration")
+        else -> null
+    }
+}
 
 /**
  * Deletes the recording that's open, after confirming. Not offered while a
@@ -444,7 +495,7 @@ private fun ReplayModeChip(label: String, selected: Boolean, onClick: () -> Unit
  * widgets are enough for "watch the match back."
  */
 @Composable
-private fun VideoPlayer(videoFile: File, modifier: Modifier = Modifier) {
+private fun VideoPlayer(videoFile: File, startAtMs: Long, modifier: Modifier = Modifier) {
     AndroidView(
         modifier = modifier.fillMaxSize(),
         factory = { context ->
@@ -461,9 +512,6 @@ private fun VideoPlayer(videoFile: File, modifier: Modifier = Modifier) {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
-                // Default — clips a scaled-up child to these bounds, which is
-                // exactly the "fill and crop" effect below relies on.
-                clipChildren = true
             }
             val videoView = VideoView(context)
             container.addView(
@@ -475,35 +523,28 @@ private fun VideoPlayer(videoFile: File, modifier: Modifier = Modifier) {
                 ),
             )
             videoView.setVideoURI(Uri.fromFile(videoFile))
-            val controller = MediaController(context)
-            controller.setAnchorView(videoView)
-            videoView.setMediaController(controller)
-            videoView.setOnPreparedListener {
-                videoView.start()
-                // VideoView measures itself to the video's own aspect ratio
-                // rather than stretching to fill whatever it's given (no
-                // LayoutParams change fixes this — it recomputes its own fit
-                // size regardless), so filling the container edge to edge
-                // means scaling the rendered content itself, past its own
-                // measured bounds, and letting the container clip the excess
-                // — the standard technique for a CENTER_CROP-style fill.
-                // Deferred to `post` so this runs after the layout pass that
-                // gives `container` and `videoView` their real measured sizes.
-                videoView.post {
-                    val videoWidth = videoView.measuredWidth.toFloat()
-                    val videoHeight = videoView.measuredHeight.toFloat()
-                    val targetWidth = container.width.toFloat()
-                    val targetHeight = container.height.toFloat()
-                    if (videoWidth > 0f && videoHeight > 0f && targetWidth > 0f && targetHeight > 0f) {
-                        // Exact edge-to-edge fill measured too large on-device —
-                        // scaled back down 30%, evenly on every side since the
-                        // scale is applied around the view's own center.
-                        val fillScale = maxOf(targetWidth / videoWidth, targetHeight / videoHeight)
-                        val scale = fillScale * 0.7f
-                        videoView.scaleX = scale
-                        videoView.scaleY = scale
-                    }
+            // VideoView anchors its MediaController to its parent, this container,
+            // so the bar spans the container. The picture used to be drawn at 70%
+            // of its fitted size, leaving the bar sticking out past both edges and
+            // over half of it (2026-09-12); at its fitted size it fills that width.
+            //
+            // No controller until the video is touched: VideoView shows one for
+            // three seconds every time playback starts, right over the serve that
+            // was just tapped to watch. Once attached, VideoView's own touch
+            // handling shows and hides it on each tap.
+            var controllerAttached = false
+            videoView.setOnTouchListener { _, event ->
+                if (!controllerAttached && event.action == MotionEvent.ACTION_DOWN) {
+                    videoView.setMediaController(MediaController(context))
+                    controllerAttached = true
                 }
+                false
+            }
+            videoView.setOnPreparedListener { player ->
+                // The closest frame, not the keyframe before it: a phone
+                // recording's keyframes can be a second or more apart.
+                if (startAtMs > 0) player.seekTo(startAtMs, MediaPlayer.SEEK_CLOSEST)
+                videoView.start()
             }
             container
         },

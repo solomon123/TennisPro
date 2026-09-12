@@ -161,16 +161,16 @@ first real-court test.
 differencing), `ServeProposalsTest` (each pose rule, including the look-alikes
 it rejects), `ServeFlightTest` (serves simulated in 3D with gravity and drag
 through a camera matching a real calibration: launch speed recovered within
-6%, net faults, clutter), and `CourtLineDetectorTest` (a synthetic court plus a
-real 2026-09-08 frame).
+6%, net faults, clutter), and `CourtLineDetectorTest` (a synthetic court, a
+real 2026-09-08 frame, and a 2026-09-11 frame from a low mount with the near
+baseline out of view).
 
 Confirmed on a Galaxy S25 Ultra:
 
 1. Replay → a recording made before automatic scanning → **Find serves**
    starts a background scan with a progress notification, and Replay shows
    the result: on the 57 s `2026-09-08T18-10-14` recording, both serves
-   (147 and 153 km/h, ±7-8%) in 85 s. Each chip jumps the scrubber to its
-   serve.
+   (147 and 153 km/h, ±7-8%) in 85 s.
 2. Off-device, the same pipeline on all four 2026-09-08 recordings found 13
    of the 14 serves counted by eye (8 measured at 132-166 km/h, 5 net
    faults), with 2 false detections in 10 minutes of rallying.
@@ -185,6 +185,9 @@ Not yet verified:
    Replay lists the serves when it finishes.
 5. **A long recording.** The pose pass runs at about real time on this phone,
    so check a full match scans to completion in the background.
+6. **Replay after a rescan.** Tapping a serve's chip plays it from 2 s before
+   contact. Back in **Scrub**, the court lines are the ones that serve was
+   measured against, and the caption under **Calibrate from this frame** says so.
 
 ## Verifying Phase 4
 

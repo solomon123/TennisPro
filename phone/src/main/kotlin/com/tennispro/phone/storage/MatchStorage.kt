@@ -3,6 +3,7 @@ package com.tennispro.phone.storage
 import android.content.Context
 import android.os.Environment
 import android.util.Log
+import com.tennispro.core.court.CalibrationPoints
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -49,6 +50,8 @@ data class DetectedServe(
     val callEdge: String? = null,
     val bounceXMeters: Double? = null,
     val bounceYMeters: Double? = null,
+    /** The court this serve was measured against, found in the recording at the serve. Null for scans before 2026-09-12. */
+    val court: CalibrationPoints? = null,
 )
 
 /** The result of scanning one recording for serves; [error] set if the scan couldn't run at all. */
@@ -57,6 +60,8 @@ data class SessionServes(
     val scannedAtEpochMs: Long,
     val serves: List<DetectedServe>,
     val error: String? = null,
+    /** The court found near the recording's start, used for any serve where it couldn't be found again. */
+    val court: CalibrationPoints? = null,
 )
 
 /** A session as presented to the UI: metadata plus what is actually on disk. */

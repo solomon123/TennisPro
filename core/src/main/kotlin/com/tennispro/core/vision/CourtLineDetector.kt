@@ -252,10 +252,39 @@ object CourtLineDetector {
     private val sampleXs: DoubleArray
     private val sampleYs: DoubleArray
 
+    /**
+     * Where a real court has *no* paint that a wrong fit would put there: the
+     * centre line carried on past each service line toward its baseline,
+     * stopping short of the baseline's own centre mark.
+     *
+     * From a low mount on 2026-09-11 the near baseline was below the frame, and
+     * a fit that took the near service line for the baseline won on every frame
+     * tried: nothing in the model objected to its centre line starting above
+     * that "baseline" while the painted centre line ran right down to it. Paint
+     * found along these gaps now counts against a fit.
+     */
+    private val GAP_SEGMENTS: List<Segment> = listOf(
+        Segment(DOUBLES_W / 2, CENTRE_MARK_CLEARANCE_M, DOUBLES_W / 2, NEAR_SERVICE_Y - GAP_END_CLEARANCE_M),
+        Segment(DOUBLES_W / 2, FAR_SERVICE_Y + GAP_END_CLEARANCE_M, DOUBLES_W / 2, LENGTH - CENTRE_MARK_CLEARANCE_M),
+    )
+    private const val CENTRE_MARK_CLEARANCE_M = 0.3
+    private const val GAP_END_CLEARANCE_M = 0.3
+    private val gapXs: DoubleArray
+    private val gapYs: DoubleArray
+
     init {
+        val (xs, ys) = samplesAlong(SEGMENTS)
+        sampleXs = xs
+        sampleYs = ys
+        val (gx, gy) = samplesAlong(GAP_SEGMENTS)
+        gapXs = gx
+        gapYs = gy
+    }
+
+    private fun samplesAlong(segments: List<Segment>): Pair<DoubleArray, DoubleArray> {
         val xs = ArrayList<Double>()
         val ys = ArrayList<Double>()
-        for (s in SEGMENTS) {
+        for (s in segments) {
             val length = hypot(s.x1 - s.x0, s.y1 - s.y0)
             val count = max(2, (length * SAMPLES_PER_METER).roundToInt())
             for (k in 0 until count) {
@@ -264,8 +293,7 @@ object CourtLineDetector {
                 ys += s.y0 + (s.y1 - s.y0) * t
             }
         }
-        sampleXs = xs.toDoubleArray()
-        sampleYs = ys.toDoubleArray()
+        return xs.toDoubleArray() to ys.toDoubleArray()
     }
 
     // ------------------------------------------------------------ line pixels
@@ -434,8 +462,14 @@ object CourtLineDetector {
     private const val MAX_HORIZONTAL_CANDIDATES = 8
     private const val MAX_SIDELINE_CANDIDATES = 10
     private const val MISS_WEIGHT = 0.5
+
+    /** Per pixel of paint along a [GAP_SEGMENTS] stretch, where a real court has none. */
+    private const val GAP_WEIGHT = 3.0
     private const val REFINED_HYPOTHESES = 8
     private val MAX_EXPLAIN_SIN = sin(2.0 * PI / 180)
+
+    /** Looser than [MAX_EXPLAIN_SIN]: the tape sags toward the centre strap, so its fitted line tilts a little. */
+    private val MAX_NET_SIN = sin(4.0 * PI / 180)
     private const val MAX_EXPLAIN_DISTANCE = 4.0
 
     /**
@@ -565,7 +599,21 @@ object CourtLineDetector {
             stamp[i] = id
             if (hitMask[i]) hits++ else misses++
         }
-        return hits - MISS_WEIGHT * misses
+        var gapHits = 0
+        for (k in gapXs.indices) {
+            val x = gapXs[k]
+            val y = gapYs[k]
+            val den = m[6] * x + m[7] * y + m[8]
+            if (den <= 1e-9) continue
+            val u = (m[0] * x + m[1] * y + m[2]) / den
+            val v = (m[3] * x + m[4] * y + m[5]) / den
+            if (u < 0 || v < 0 || u >= w || v >= h) continue
+            val i = v.toInt() * w + u.toInt()
+            if (stamp[i] == id) continue
+            stamp[i] = id
+            if (hitMask[i]) gapHits++
+        }
+        return hits - MISS_WEIGHT * misses - GAP_WEIGHT * gapHits
     }
 
     /**
@@ -575,7 +623,7 @@ object CourtLineDetector {
      */
     private fun explainedSupport(m: DoubleArray, lines: List<ImageLine>, w: Int, h: Int): Double {
         var total = 0
-        for (line in lines) {
+        lines@ for (line in lines) {
             val horizontal = abs(line.ny) >= abs(line.nx)
             for (s in SEGMENTS) {
                 val a = project(m, s.x0, s.y0) ?: continue
@@ -594,11 +642,39 @@ object CourtLineDetector {
                 if (px < 0 || py < 0 || px > w - 1 || py > h - 1) continue
                 if (abs(modelNx * (px - a.first) + modelNy * (py - a.second)) <= MAX_EXPLAIN_DISTANCE) {
                     total += line.support
-                    break
+                    continue@lines
                 }
             }
+            if (horizontal && liesOnNet(m, line)) total += line.support
         }
         return total.toDouble()
+    }
+
+    /**
+     * Whether [line] could be the net's top tape: near-parallel to the net and,
+     * at mid-court, between where the net meets the ground and the far
+     * baseline. The tape is about a metre up, off the court plane, so no
+     * homography puts it in one exact place; but for any camera higher than
+     * the tape, that band is where it shows.
+     *
+     * From a low mount the tape is the strongest straight line in the frame.
+     * Left unexplained, it let a wrong fit win on 2026-09-11 footage: taking the
+     * near service line for the baseline stretched the court so that its far
+     * service line, or its far baseline, landed on the tape — and "explained" it.
+     */
+    private fun liesOnNet(m: DoubleArray, line: ImageLine): Boolean {
+        val left = project(m, 0.0, LENGTH / 2) ?: return false
+        val right = project(m, DOUBLES_W, LENGTH / 2) ?: return false
+        val farBaseline = project(m, DOUBLES_W / 2, LENGTH) ?: return false
+        val length = hypot(right.first - left.first, right.second - left.second)
+        if (length < 1e-6) return false
+        val netNx = -(right.second - left.second) / length
+        val netNy = (right.first - left.first) / length
+        if (abs(line.nx * netNy - line.ny * netNx) > MAX_NET_SIN) return false
+        val midX = (left.first + right.first) / 2
+        val netY = (left.second + right.second) / 2
+        val lineY = yAt(line, midX)
+        return lineY <= netY + MAX_EXPLAIN_DISTANCE && lineY >= farBaseline.second - MAX_EXPLAIN_DISTANCE
     }
 
     private fun coverage(m: DoubleArray, w: Int, h: Int, hitMask: BooleanArray): Float {

@@ -2,6 +2,7 @@ package com.tennispro.core.vision
 
 import com.tennispro.core.court.CourtDimensions
 import com.tennispro.core.court.CourtFormat
+import com.tennispro.core.court.Homography
 import com.tennispro.core.court.PixelPoint
 import com.tennispro.core.court.solveHomography4
 import org.junit.Assert.assertEquals
@@ -141,19 +142,52 @@ class CourtLineDetectorTest {
      */
     @Test
     fun `finds the court in a real on-court frame`() {
-        val image = javaClass.getResourceAsStream("/court/real_court_2026-09-08.jpg")!!.use { ImageIO.read(it) }
-        val rgb = image.getRGB(0, 0, image.width, image.height, null, 0, image.width)
-        val frame = GrayscaleFrame(image.width, image.height, IntArray(rgb.size) { i ->
-            val p = rgb[i]
-            (((p shr 16) and 0xFF) * 299 + ((p shr 8) and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
-        })
-
-        val detection = CourtLineDetector.detect(frame)
+        val detection = CourtLineDetector.detect(realFrame("/court/real_court_2026-09-08.jpg"))
         assertNotNull("court not found", detection)
         val singles = detection!!.singles
         assertNear("near-right", PixelPoint(REAL_NEAR_RIGHT_X, REAL_NEAR_RIGHT_Y), singles.nearRight, 3.0)
         assertNear("far-right", PixelPoint(REAL_FAR_RIGHT_X, REAL_FAR_RIGHT_Y), singles.farRight, 8.0)
         assertNear("far-left", PixelPoint(REAL_FAR_LEFT_X, REAL_FAR_LEFT_Y), singles.farLeft, 8.0)
+    }
+
+    /**
+     * A real frame from a low mount (Galaxy S25 Ultra, front camera,
+     * 2026-09-11): the near baseline is below the frame and the net tape is the
+     * strongest straight line in it. Before the court model knew where a court
+     * has no paint, and could account for the tape, every frame tried from this
+     * recording fitted the near service line as the baseline. The server's head
+     * is pixelated.
+     *
+     * Checked through the homography rather than as corners, since two corners
+     * are extrapolated far below the frame. The points were read off zoomed
+     * crops by hand.
+     */
+    @Test
+    fun `finds the court from a low mount with the near baseline out of frame`() {
+        val detection = CourtLineDetector.detect(realFrame("/court/low_mount_2026-09-11.jpg"))
+        assertNotNull("court not found", detection)
+        val court = Homography.fromCalibration(detection!!.toCalibration(CourtFormat.SINGLES, 1920, 1080))!!
+
+        fun assertMaps(label: String, pixel: PixelPoint, expectedX: Double, expectedY: Double, toleranceM: Double) {
+            val c = court.mapToCourt(pixel)
+            val off = hypot(c.xMeters - expectedX, c.yMeters - expectedY)
+            assertTrue("$label: expected ($expectedX, $expectedY), got (${c.xMeters}, ${c.yMeters})", off <= toleranceM)
+        }
+        val nearService = LENGTH / 2 - CourtDimensions.SERVICE_LINE_FROM_NET_M
+        val width = CourtDimensions.SINGLES_WIDTH_M
+        assertMaps("near T", PixelPoint(926.5f, 824.2f), width / 2, nearService, 0.15)
+        assertMaps("near service line, right end", PixelPoint(1434.3f, 811.6f), width, nearService, 0.2)
+        // Far down the court, one pixel spans about 20 cm of its length.
+        assertMaps("far baseline, right end", PixelPoint(1134f, 623.3f), width, LENGTH, 0.4)
+    }
+
+    private fun realFrame(resource: String): GrayscaleFrame {
+        val image = javaClass.getResourceAsStream(resource)!!.use { ImageIO.read(it) }
+        val rgb = image.getRGB(0, 0, image.width, image.height, null, 0, image.width)
+        return GrayscaleFrame(image.width, image.height, IntArray(rgb.size) { i ->
+            val p = rgb[i]
+            (((p shr 16) and 0xFF) * 299 + ((p shr 8) and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
+        })
     }
 
     /** Line-centre crossings read off 6x zoomed crops of the fixture. */

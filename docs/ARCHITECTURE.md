@@ -122,6 +122,7 @@ by accident costs nothing, but stopping by accident loses the rest of the match.
 match.mp4         raw continuous recording
 session.json      id, start time, duration, resolution, frame rate
 bookmarks.jsonl   one JSON object per line, append-only
+serves.json       the serve scan's result, each serve with the court it was measured against
 ```
 
 App-specific external storage means no storage permission on any supported API
@@ -204,6 +205,21 @@ frames, each now a comment where it applies:
   corners against the paint.
 - From a low mount the net tape can sit almost on the far baseline; far
   corners are the least certain part of any calibration from there.
+- Model where a court has *no* paint, too. From a low mount (2026-09-11) the
+  near baseline was below the frame, and a fit that took the near service line
+  for the baseline won on all six frames tried: nothing objected to its centre
+  line starting above that "baseline" while the painted one ran right down to
+  it. Paint along the centre line's continuation past each service line now
+  counts against a fit, three times as much as a hit counts for it.
+- Let any fit account for the net tape. From a low mount it is the strongest
+  straight line in the frame, but it isn't paint on the court, so the right fit
+  couldn't explain it — while a wrong one stretched the court until its far
+  service line or far baseline sat on the tape, and won on explained lines. A
+  line parallel to the net, between where the net meets the ground and the far
+  baseline, now counts as explained for every fit. With both changes five of
+  those six frames fit correctly. The sixth, with the server standing across
+  the near service line after serving, never gets a right hypothesis into
+  refinement; the scan detects the court before each serve, not after.
 
 **Drift detection re-detects the court.** `DriftDetector` runs
 `CourtLineDetector` on the live frame (in the recording's pixel space, like the
@@ -295,8 +311,13 @@ field-test request (2026-09-10): nobody can touch the phone mid-match.
 background as soon as `RecordingService` finalizes a recording (a foreground
 service, type `mediaProcessing` on Android 15+ and `dataSync` below, since a
 long match takes minutes to scan), and Replay's **Find serves** runs it for
-older recordings. Results are written to `serves.json` beside the video and
-shown in Replay as one chip per serve.
+older recordings. Results are written to `serves.json` beside the video, each
+serve with the court corners it was measured against, and shown in Replay as
+one chip per serve. Tapping a chip plays that serve from 2 s before contact.
+**Scrub** draws the court the nearest serve was measured against, not the saved
+calibration: that one belongs to wherever the phone was when it was made. On
+2026-09-11 that was before the phone was hung on the fence, and its grid landed
+far off the court.
 
 ### Why Phase 3's pipeline was replaced, not tuned
 
