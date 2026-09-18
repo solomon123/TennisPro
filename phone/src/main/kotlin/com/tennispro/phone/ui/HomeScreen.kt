@@ -75,6 +75,7 @@ fun HomeScreen(
     onScore: () -> Unit,
     onCalibrate: () -> Unit,
     onReplay: () -> Unit,
+    onAbout: () -> Unit,
 ) {
     val activeMatch by matchController.match.collectAsState()
     var sessions by remember { mutableStateOf<List<MatchSession>>(emptyList()) }
@@ -126,6 +127,13 @@ fun HomeScreen(
                             onClick = {
                                 menuOpen = false
                                 onWatchCheck()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("About & updates") },
+                            onClick = {
+                                menuOpen = false
+                                onAbout()
                             },
                         )
                         HorizontalDivider()

@@ -18,7 +18,7 @@ import com.tennispro.phone.camera.RecordingService
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /** A handful of screens; a navigation library would be more moving parts than routes. */
-enum class Screen { HOME, RECORD, WATCH_CHECK, SCORE, CALIBRATE, REPLAY }
+enum class Screen { HOME, RECORD, WATCH_CHECK, SCORE, CALIBRATE, REPLAY, ABOUT }
 
 @Composable
 fun AppRoot(
@@ -52,6 +52,7 @@ fun AppRoot(
                     onScore = { screen = Screen.SCORE },
                     onCalibrate = { screen = Screen.CALIBRATE },
                     onReplay = { screen = Screen.REPLAY },
+                    onAbout = { screen = Screen.ABOUT },
                 )
 
                 Screen.RECORD -> RecordScreen(
@@ -78,6 +79,11 @@ fun AppRoot(
                 Screen.CALIBRATE -> CalibrateScreen(
                     service = service,
                     calibrationStorage = app.calibrationStorage,
+                    onBack = { screen = Screen.HOME },
+                )
+
+                Screen.ABOUT -> AboutScreen(
+                    diagnostics = diagnostics,
                     onBack = { screen = Screen.HOME },
                 )
 

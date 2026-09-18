@@ -110,6 +110,11 @@ dependencies {
     implementation(libs.mediapipe.tasks.vision)
 
     implementation(libs.play.services.wearable)
+
+    // In-app updates. Verified to add no permissions of its own: it talks to the
+    // installed Play Store app over IPC, so the INTERNET removal in the manifest
+    // stands. See docs/PLAY_RELEASE.md.
+    implementation(libs.play.app.update)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.kotlinx.serialization.json)
