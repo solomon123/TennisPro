@@ -93,9 +93,23 @@ class Haptics(context: Context) {
             )
 
             // Long and soft: something needs doing on the phone.
-            AlertKind.RECORDING_REFUSED -> waveform(
+            AlertKind.RECORDING_REFUSED, AlertKind.MATCH_REFUSED -> waveform(
                 timings = longArrayOf(0, 500),
                 amplitudes = intArrayOf(0, 110),
+            )
+
+            // A rising pair: the match is under way. Deliberately unlike
+            // RECORDING_STARTED's single long pulse, since both can be pressed
+            // within seconds of each other and must not feel the same.
+            AlertKind.MATCH_STARTED -> waveform(
+                timings = longArrayOf(0, 90, 70, 200),
+                amplitudes = intArrayOf(0, 150, 0, 230),
+            )
+
+            // The same shape falling, so starting and ending are mirror images.
+            AlertKind.MATCH_ENDED -> waveform(
+                timings = longArrayOf(0, 200, 70, 90),
+                amplitudes = intArrayOf(0, 230, 0, 150),
             )
         }
 

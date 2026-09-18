@@ -3,8 +3,10 @@ package com.tennispro.phone.wear
 import android.util.Log
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.WearableListenerService
+import com.tennispro.core.protocol.WatchToPhone
 import com.tennispro.core.protocol.WearCodec
 import com.tennispro.core.protocol.WearPaths
+import com.tennispro.phone.TennisProApp
 
 /**
  * Receives watch messages even when no activity is running, so a score tap made
@@ -30,6 +32,15 @@ class PhoneWearableListenerService : WearableListenerService() {
         }
 
         Log.d(TAG, "watch -> phone: $message")
+
+        // Match control is handled here rather than by a WearEventBus collector.
+        // This service is what starts the process when the app is closed — the
+        // phone hung on a fence with its screen off — and the bus does not replay,
+        // so a controller created in response to this very message would miss it.
+        if (message is WatchToPhone.MatchControl) {
+            (application as? TennisProApp)?.matchController?.handleWatchMatchControl(message.start)
+        }
+
         WearEventBus.publish(message)
     }
 

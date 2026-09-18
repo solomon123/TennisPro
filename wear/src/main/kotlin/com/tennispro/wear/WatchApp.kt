@@ -6,6 +6,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -41,16 +42,20 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * The whole watch UI: one full-screen tap target, plus a Record button.
+ * The whole watch UI: one full-screen tap target, plus the Match and Record pills.
  *
  * No list, no scrolling. On court the user is holding a racket and looking at a
  * ball, so the entire face is the control surface and the gesture — not the
  * position of a finger — carries the meaning. Phase 1 hangs the real scoring
  * semantics off these same three gestures.
  *
- * The Record button along the bottom edge is for a phone hung out of reach. It
- * is a sibling drawn over the tap surface, not a child of it, so a press on the
+ * The two pills along the bottom edge are for a phone hung out of reach: Match
+ * starts and ends the score, Record starts and stops the video. They are
+ * siblings drawn over the tap surface, not children of it, so a press on a
  * button never also reaches the surface and scores a point.
+ *
+ * The two are independent on purpose — a practice session is filmed without a
+ * score, and a match can be scored with nothing filming.
  */
 @Composable
 fun WatchApp(link: WatchLink, haptics: Haptics) {
@@ -65,7 +70,14 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
     // Which Record command awaits the phone's answer (true = start), if any.
     var pendingStart by remember { mutableStateOf<Boolean?>(null) }
     var confirmStop by remember { mutableStateOf(false) }
-    var recordHint by remember { mutableStateOf<String?>(null) }
+
+    // The same pair for the Match button. Kept separate from the Record ones so a
+    // pending Record never greys out Match, and a Stop confirm never arms End.
+    var pendingMatch by remember { mutableStateOf<Boolean?>(null) }
+    var confirmEnd by remember { mutableStateOf(false) }
+
+    // One line of explanation for whichever button could not be acted on.
+    var hint by remember { mutableStateOf<String?>(null) }
 
     // An OUT call takes over the screen briefly, so a glance immediately after the
     // buzz shows the call rather than the idle face.
@@ -76,7 +88,7 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
             when (alert.kind) {
                 AlertKind.OUT_CALL -> 4_000L
                 // Says what to do on the phone, so it needs reading time.
-                AlertKind.RECORDING_REFUSED -> 3_000L
+                AlertKind.RECORDING_REFUSED, AlertKind.MATCH_REFUSED -> 3_000L
                 else -> 1_200L
             },
         )
@@ -90,9 +102,12 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
         }
     }
 
-    // The phone answers every Record/Stop tap with a recording alert.
+    // The phone answers every Record/Stop and Match/End tap with an alert.
     LaunchedEffect(Unit) {
-        WatchEventBus.alerts.collect { if (it.kind in RecordingAlertKinds) pendingStart = null }
+        WatchEventBus.alerts.collect {
+            if (it.kind in RecordingAlertKinds) pendingStart = null
+            if (it.kind in MatchAlertKinds) pendingMatch = null
+        }
     }
 
     // No answer means the phone app is not on its Record screen, or not running.
@@ -101,13 +116,23 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
         delay(RECORD_REPLY_TIMEOUT_MS)
         pendingStart = null
         if (start) {
-            recordHint = "Open Record on the phone"
+            hint = "Open Record on the phone"
         } else {
             // Nothing is alive on the phone to be recording, or it's out of
             // range. Show REC again: if it is recording, REC answers "Already recording".
             WatchEventBus.publishStatus(PhoneToWatch.Status(recording = false))
-            recordHint = "No reply from phone"
+            hint = "No reply from phone"
         }
+    }
+
+    // Match control needs no screen open on the phone — the listener service wakes
+    // the app — so silence here means out of range or the app uninstalled, never
+    // "wrong screen". Hence a different hint from the Record one above.
+    LaunchedEffect(pendingMatch) {
+        if (pendingMatch == null) return@LaunchedEffect
+        delay(MATCH_REPLY_TIMEOUT_MS)
+        pendingMatch = null
+        hint = "No reply from phone"
     }
 
     LaunchedEffect(confirmStop) {
@@ -117,10 +142,17 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
         }
     }
 
-    LaunchedEffect(recordHint) {
-        if (recordHint != null) {
+    LaunchedEffect(confirmEnd) {
+        if (confirmEnd) {
             delay(3_000)
-            recordHint = null
+            confirmEnd = false
+        }
+    }
+
+    LaunchedEffect(hint) {
+        if (hint != null) {
+            delay(3_000)
+            hint = null
         }
     }
 
@@ -138,7 +170,37 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
         scope.launch {
             if (!link.sendRecordControl(start)) {
                 pendingStart = null
-                recordHint = "No phone"
+                hint = "No phone"
+            }
+        }
+    }
+
+    fun sendMatchControl(start: Boolean) {
+        haptics.tick()
+        pendingMatch = start
+        scope.launch {
+            if (!link.sendMatchControl(start)) {
+                pendingMatch = null
+                hint = "No phone"
+            }
+        }
+    }
+
+    fun onMatchButton() {
+        when {
+            pendingMatch != null -> Unit
+            // A decided match is finished business; End on it starts nothing and
+            // needs no guarding, but the score is still worth one deliberate tap.
+            matchState == null -> sendMatchControl(start = true)
+            // Ending by accident loses the score with no undo, so End takes a
+            // second tap, exactly as Stop does.
+            !confirmEnd -> {
+                haptics.tick()
+                confirmEnd = true
+            }
+            else -> {
+                confirmEnd = false
+                sendMatchControl(start = false)
             }
         }
     }
@@ -186,7 +248,7 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
         ) {
             Column(
                 // Lifted clear of the Record button along the bottom edge.
-                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = if (outFlash) 0.dp else 36.dp),
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = if (outFlash) 0.dp else 44.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
@@ -218,8 +280,8 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
                         textAlign = TextAlign.Center,
                     )
 
-                    recordHint != null -> Text(
-                        text = recordHint.orEmpty(),
+                    hint != null -> Text(
+                        text = hint.orEmpty(),
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
@@ -254,39 +316,61 @@ fun WatchApp(link: WatchLink, haptics: Haptics) {
         }
 
         if (!outFlash) {
-            RecordButton(
-                label = when {
-                    pendingStart != null -> "…"
-                    confirmStop -> "Tap to stop"
-                    status.recording -> "■  STOP"
-                    else -> "●  REC"
-                },
-                live = status.recording,
-                onClick = { onRecordButton() },
+            // Two pills sharing the bottom edge. Match sits left, where the thumb
+            // lands first, because it is pressed once per match; Record is pressed
+            // once per session and can afford the outer position.
+            Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 14.dp),
-            )
+                    .padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PillButton(
+                    label = when {
+                        pendingMatch != null -> "…"
+                        confirmEnd -> "End?"
+                        matchState != null -> "■ END"
+                        else -> "▶ MATCH"
+                    },
+                    live = confirmEnd,
+                    onClick = { onMatchButton() },
+                )
+                PillButton(
+                    label = when {
+                        pendingStart != null -> "…"
+                        confirmStop -> "Stop?"
+                        status.recording -> "■ STOP"
+                        else -> "● REC"
+                    },
+                    live = status.recording,
+                    onClick = { onRecordButton() },
+                )
+            }
         }
     }
 }
 
-// Tells the player what to do next rather than what the watch is doing: nothing
-// shows here until a match (or recording) is started from the phone.
-private fun statusIdleText(text: String) = text.ifBlank { "Start the match on the phone" }
+// Tells the player what to do next rather than what the watch is doing. Both
+// buttons below are now on the wrist, so this points at them rather than at the phone.
+private fun statusIdleText(text: String) = text.ifBlank { "MATCH to score · REC to film" }
 
-/** A pill along the bottom edge: grey REC while idle, red STOP while the phone records. */
+/**
+ * One of the two bottom-edge pills: grey at rest, red while live (recording, or
+ * an End/Stop confirm armed). Drawn as a sibling of the tap surface, never a
+ * child, so pressing a button cannot also score a point.
+ */
 @Composable
-private fun RecordButton(label: String, live: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun PillButton(label: String, live: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(50))
             .background(if (live) OutRed else RecordIdleGrey)
             .clickable(onClick = onClick)
-            .padding(horizontal = 18.dp, vertical = 10.dp),
+            .padding(horizontal = 11.dp, vertical = 9.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text = label, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        Text(text = label, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
     }
 }
 
@@ -360,5 +444,14 @@ private val RecordingAlertKinds = setOf(
     AlertKind.RECORDING_REFUSED,
 )
 
+private val MatchAlertKinds = setOf(
+    AlertKind.MATCH_STARTED,
+    AlertKind.MATCH_ENDED,
+    AlertKind.MATCH_REFUSED,
+)
+
 // Recording starts within about a second; Data Layer delivery adds a few hundred ms.
 private const val RECORD_REPLY_TIMEOUT_MS = 5_000L
+
+// Shorter: no camera to open, but the phone's process may need cold-starting.
+private const val MATCH_REPLY_TIMEOUT_MS = 4_000L

@@ -288,6 +288,29 @@ class ScoringTest {
         assertEquals(projection, MatchStateCodec.decodeProjection(encodedProjection))
     }
 
+    /**
+     * A match started from the watch carries no format, so it replays the last
+     * config off disk. Every field has to survive that round trip or the wrist
+     * would silently start a different match from the one last played.
+     */
+    @Test
+    fun `match config round trips with every field off its default`() {
+        val config = MatchConfig(
+            setsToWin = 3,
+            gamesToWinSet = 4,
+            tiebreakPointsToWin = 10,
+            noAd = true,
+            finalSetTiebreak = false,
+            tiebreakOnlyMatch = true,
+        )
+        assertEquals(config, MatchStateCodec.decodeConfig(MatchStateCodec.encodeConfig(config)))
+    }
+
+    @Test
+    fun `an unreadable config decodes to null rather than throwing`() {
+        assertNull(MatchStateCodec.decodeConfig("not json"))
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     /** Plays out one game (4 love points) for [winner] without touching the other side's score. */

@@ -32,6 +32,9 @@ class WatchLink(context: Context) {
     suspend fun sendRecordControl(start: Boolean): Boolean =
         send(WatchToPhone.RecordControl(start))
 
+    suspend fun sendMatchControl(start: Boolean): Boolean =
+        send(WatchToPhone.MatchControl(start))
+
     suspend fun sendPong(nonce: Long, phoneSentAtElapsedMs: Long): Boolean =
         send(
             WatchToPhone.Pong(

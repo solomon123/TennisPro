@@ -67,6 +67,8 @@ class MatchController(
         val fresh = MatchState(config = config)
         _match.value = fresh
         storage.save(fresh)
+        // Remembered so a watch-started match, which carries no format, gets this one.
+        storage.saveLastConfig(config)
         pushToWatch(fresh.projection())
     }
 
@@ -74,6 +76,67 @@ class MatchController(
         _match.value = null
         storage.clear()
         pushToWatch(null)
+    }
+
+    /**
+     * The watch's Match/End button, routed here by
+     * [com.tennispro.phone.wear.PhoneWearableListenerService] rather than through
+     * [WearEventBus]. That service is what wakes this process when a message
+     * arrives with the app closed — exactly the case this button exists for, the
+     * phone strapped to a fence — and calling straight in avoids racing the bus,
+     * whose `replay = 0` would drop the command if this controller's collector had
+     * not started subscribing yet.
+     *
+     * Every branch answers the wrist. The phone is out of reach, so an unanswered
+     * tap is indistinguishable from a broken link.
+     */
+    fun handleWatchMatchControl(start: Boolean) {
+        val current = _match.value
+        when {
+            // A decided match still on screen is finished business — starting the
+            // next one over it is what the user means.
+            start && current != null && current.projection().winner == null -> {
+                scope.launch {
+                    wearLink.send(
+                        PhoneToWatch.Alert(
+                            kind = AlertKind.MATCH_REFUSED,
+                            headline = "Match already on",
+                            detail = ScoreFormat.summary(current.projection()),
+                        ),
+                    )
+                }
+            }
+
+            start -> {
+                val config = storage.lastConfig()
+                startMatch(config)
+                scope.launch {
+                    wearLink.send(
+                        PhoneToWatch.Alert(
+                            kind = AlertKind.MATCH_STARTED,
+                            headline = "Match on",
+                            detail = if (config.tiebreakOnlyMatch) "Tiebreak" else "Best of ${config.setsToWin * 2 - 1}",
+                        ),
+                    )
+                }
+            }
+
+            else -> {
+                // Answered even with no match running, so End always confirms
+                // something — same contract as Stop when not recording.
+                val summary = current?.let { ScoreFormat.summary(it.projection()) }
+                endMatch()
+                scope.launch {
+                    wearLink.send(
+                        PhoneToWatch.Alert(
+                            kind = AlertKind.MATCH_ENDED,
+                            headline = if (summary == null) "No match" else "Match ended",
+                            detail = summary,
+                        ),
+                    )
+                }
+            }
+        }
     }
 
     /** Records a point for [side]. Called by both a watch gesture and the phone's own buttons. */

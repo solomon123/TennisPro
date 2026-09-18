@@ -1,6 +1,7 @@
 package com.tennispro.core.protocol
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -56,6 +57,33 @@ class WearCodecTest {
             val original = WatchToPhone.RecordControl(start)
             assertEquals(original, WearCodec.decodeWatchToPhone(WearCodec.encode(original)))
         }
+    }
+
+    @Test
+    fun `match control round trips both ways`() {
+        for (start in listOf(true, false)) {
+            val original = WatchToPhone.MatchControl(start)
+            assertEquals(original, WearCodec.decodeWatchToPhone(WearCodec.encode(original)))
+        }
+    }
+
+    /**
+     * The two buttons on the watch face send near-identical payloads, so a shared
+     * or copy-pasted discriminator would have End silently stopping the recording.
+     */
+    @Test
+    fun `match control and record control are distinct on the wire`() {
+        val match = WearCodec.encode(WatchToPhone.MatchControl(start = true)).decodeToString()
+        val record = WearCodec.encode(WatchToPhone.RecordControl(start = true)).decodeToString()
+        assertNotEquals(match, record)
+        assertEquals(
+            WatchToPhone.MatchControl(start = true),
+            WearCodec.decodeWatchToPhone(match.encodeToByteArray()),
+        )
+        assertEquals(
+            WatchToPhone.RecordControl(start = true),
+            WearCodec.decodeWatchToPhone(record.encodeToByteArray()),
+        )
     }
 
     @Test

@@ -41,6 +41,15 @@ enum class AlertKind {
 
     /** The phone could not act on the watch's Record button; the headline says why. */
     RECORDING_REFUSED,
+
+    /** A match was started, however it was started. Distinct from [MATCH_WON]. */
+    MATCH_STARTED,
+
+    /** The match was ended and cleared, or End was pressed with no match running. */
+    MATCH_ENDED,
+
+    /** The phone would not start or end a match; the headline says why. */
+    MATCH_REFUSED,
 }
 
 /** Physical button / gesture the user performed on the watch. */
@@ -136,6 +145,22 @@ sealed interface WatchToPhone {
     @Serializable
     @SerialName("record")
     data class RecordControl(
+        val start: Boolean,
+    ) : WatchToPhone
+
+    /**
+     * The watch's Match/End button. Separate from [RecordControl] because the two
+     * are genuinely independent: a practice session is recorded without a score,
+     * and a match can be scored with nothing recording.
+     *
+     * Explicit start/end for the same reason [RecordControl] is explicit — a watch
+     * showing stale state must never end a match it meant to start. The format is
+     * not carried here: the phone reuses the last format it was given, so the
+     * wrist never has to express a MatchConfig.
+     */
+    @Serializable
+    @SerialName("match")
+    data class MatchControl(
         val start: Boolean,
     ) : WatchToPhone
 }
