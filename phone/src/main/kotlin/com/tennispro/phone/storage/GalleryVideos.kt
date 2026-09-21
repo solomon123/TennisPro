@@ -62,16 +62,22 @@ object GalleryVideos {
             return null
         }
 
-        val copied = runCatching {
+        // Verified against the bytes this copy actually wrote, not against
+        // MediaStore's SIZE column: while IS_PENDING is 1 that column is not
+        // reliably populated, and trusting it here threw away good exports.
+        val written = runCatching {
             resolver.openOutputStream(uri, "w").use { out ->
                 requireNotNull(out) { "no output stream for $uri" }
                 file.inputStream().use { it.copyTo(out) }
             }
-        }.isSuccess
+        }.getOrElse {
+            Log.w(TAG, "Could not write ${file.name} into the gallery", it)
+            runCatching { resolver.delete(uri, null, null) }
+            return null
+        }
 
-        val actual = if (copied) sizeOf(context, uri) else null
-        if (!copied || actual != expected) {
-            Log.w(TAG, "Export of ${file.name} incomplete (expected $expected, got $actual) — keeping the local file")
+        if (written != expected) {
+            Log.w(TAG, "Export of ${file.name} short: wrote $written of $expected bytes")
             runCatching { resolver.delete(uri, null, null) }
             return null
         }
@@ -80,6 +86,16 @@ object GalleryVideos {
             resolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
         }.onFailure {
             Log.w(TAG, "Could not publish $uri", it)
+            runCatching { resolver.delete(uri, null, null) }
+            return null
+        }
+
+        // Second check, now that the row is published and its size means something.
+        // A null here is MediaStore being unhelpful, not evidence of a bad copy, so
+        // only a definite mismatch is treated as failure.
+        val reported = sizeOf(context, uri)
+        if (reported != null && reported != expected) {
+            Log.w(TAG, "Published $uri reports $reported bytes, expected $expected — keeping the local file")
             runCatching { resolver.delete(uri, null, null) }
             return null
         }
@@ -101,8 +117,27 @@ object GalleryVideos {
         false
     }
 
-    /** True if the video is still there — the user can delete it from their gallery at any time. */
-    fun exists(context: Context, uri: Uri): Boolean = sizeOf(context, uri) != null
+    /**
+     * Whether a published video is still in the gallery. [UNKNOWN] matters as
+     * much as the other two: a recording is only discarded on a definite
+     * [MISSING], never because MediaStore happened to be unreachable.
+     */
+    enum class Presence { PRESENT, MISSING, UNKNOWN }
+
+    /**
+     * A video the user deleted in their gallery is gone from a normal query even
+     * while it sits in the gallery's own trash, which is the right reading here:
+     * they deleted it, and the app should follow.
+     */
+    fun presence(context: Context, uri: Uri): Presence = runCatching {
+        context.contentResolver
+            .query(uri, arrayOf(MediaStore.Video.Media._ID), null, null, null)
+            ?.use { if (it.moveToFirst()) Presence.PRESENT else Presence.MISSING }
+            ?: Presence.MISSING
+    }.getOrElse {
+        Log.w(TAG, "Could not tell whether $uri is still in the gallery", it)
+        Presence.UNKNOWN
+    }
 
     private fun sizeOf(context: Context, uri: Uri): Long? = runCatching {
         context.contentResolver.query(uri, arrayOf(MediaStore.Video.Media.SIZE), null, null, null)

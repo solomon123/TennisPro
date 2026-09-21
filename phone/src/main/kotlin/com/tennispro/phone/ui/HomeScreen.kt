@@ -97,6 +97,10 @@ fun HomeScreen(
 
     LaunchedEffect(reloadToken) {
         withContext(Dispatchers.IO) {
+            // Home lists recordings too, so it squares up with the gallery on the
+            // same terms Replay does — otherwise a recording deleted from the
+            // gallery would linger here until Replay was opened.
+            storage.reconcileWithGallery()
             sessions = storage.listSessions()
             totalBytes = storage.totalBytes()
             freeBytes = storage.freeBytes()

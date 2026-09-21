@@ -103,7 +103,15 @@ fun ReplayScreen(
     var calibrationVersion by remember { mutableIntStateOf(0) }
     var reloadToken by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(reloadToken) { sessions = withContext(Dispatchers.IO) { matchStorage.listSessions() } }
+    LaunchedEffect(reloadToken) {
+        sessions = withContext(Dispatchers.IO) { matchStorage.listSessions() }
+        // Then square up with the gallery, behind the list: anything not yet
+        // published is moved there, and anything the user deleted from their
+        // gallery is dropped here. Listing first keeps the screen responsive
+        // while a copy runs.
+        val changed = withContext(Dispatchers.IO) { matchStorage.reconcileWithGallery() }
+        if (changed) sessions = withContext(Dispatchers.IO) { matchStorage.listSessions() }
+    }
 
     val frameToCalibrate = calibrationFrame
     if (frameToCalibrate != null) {

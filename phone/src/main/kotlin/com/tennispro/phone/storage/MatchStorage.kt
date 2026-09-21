@@ -199,6 +199,50 @@ class MatchStorage(private val context: Context) {
     }
 
     /**
+     * Publishes every recording whose video is still sitting in its session
+     * directory, and returns how many moved. Covers recordings made before the
+     * app published to the gallery at all, and any export that failed at the
+     * time — a failed publish leaves the local file exactly where it was, so
+     * retrying later is always safe.
+     */
+    fun exportPending(): Int =
+        listSessions()
+            .filter { it.meta.videoUri == null && videoFileFor(it).isFile }
+            .count { exportToGallery(it).meta.videoUri != null }
+
+    /**
+     * Drops recordings whose video the user deleted from their gallery. Without
+     * this they linger as entries that list and scan but will not play.
+     *
+     * Deleting the video is taken as deleting the recording, so its bookmarks
+     * and serve results go too. Only a definite absence counts: if MediaStore
+     * cannot be asked, the recording is left alone, because the cost of being
+     * wrong here is destroying a match the user still has.
+     */
+    fun pruneMissingVideos(): Int =
+        listSessions()
+            .filter { session ->
+                val uri = session.galleryUri ?: return@filter false
+                GalleryVideos.presence(context, uri) == GalleryVideos.Presence.MISSING
+            }
+            .count { session ->
+                Log.i(TAG, "Dropping ${session.meta.id}: its video is no longer in the gallery")
+                deleteSession(session)
+            }
+
+    /**
+     * Brings the recordings in line with the gallery, in both directions: anything
+     * not yet published is moved there, anything the user deleted from the gallery
+     * is dropped here. Returns true if either changed something, so a list showing
+     * these sessions knows to reload.
+     */
+    fun reconcileWithGallery(): Boolean {
+        val exported = exportPending()
+        val dropped = pruneMissingVideos()
+        return exported > 0 || dropped > 0
+    }
+
+    /**
      * Where to read this session's video from, for playback, scanning or sharing.
      * A published recording is a `content://` URI; one not yet exported is still
      * the file in the session directory. Every reader takes both.
