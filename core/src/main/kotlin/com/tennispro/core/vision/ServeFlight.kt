@@ -11,6 +11,7 @@ import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.roundToLong
 import kotlin.math.sqrt
 
 /** The ball candidates [MotionBlobs] found in one frame. */
@@ -440,23 +441,124 @@ object ServeFlight {
     private fun contactTime(chain: List<Link>, c: Context): Long? {
         val first = chain.first()
         for (frame in first.frame - 1 downTo max(TOSS_TRACK_FRAMES - 1, first.frame - CONTACT_LOOKBACK_FRAMES)) {
-            if (c.blobs[frame].any { it.y < c.headY && abs(it.x - first.x) < CONTACT_NEAR_X_PX && endsFallingTrack(it, frame, c) }) {
-                return (c.frames[frame].timeMs + c.frames[first.frame].timeMs) / 2
+            for (blob in c.blobs[frame]) {
+                if (blob.y >= c.headY || abs(blob.x - first.x) >= CONTACT_NEAR_X_PX) continue
+                val toss = fallingTrackEndingAt(blob, frame, c) ?: continue
+                val midpoint = (c.frames[frame].timeMs + c.frames[first.frame].timeMs) / 2
+                return meetingTime(toss, chain, c) ?: midpoint
             }
         }
         return null
     }
 
-    /** Whether [blob] in [frame] is preceded by blobs falling nearly vertically onto it, one per frame. */
-    private fun endsFallingTrack(blob: BallCandidate, frame: Int, c: Context): Boolean {
+    /**
+     * Where the falling toss and the rising flight would have been in the same
+     * place: the racket was there, so that is contact.
+     *
+     * The midpoint of the last toss frame and the first flight frame only holds
+     * while both are seen close to contact. Off the strings the ball is large
+     * and smeared, and [MotionBlobs]' size filter drops it for several frames,
+     * so the flight is first seen late while the toss is not — and the midpoint
+     * slides late with it, shortening the flight and inflating the speed. On
+     * simulated serves this was +2.9% at three blind frames and +6.5% at six.
+     *
+     * Both sides are extrapolated as constant acceleration on screen — gravity
+     * plus perspective, the same model the chaining already uses — and the time
+     * between them that brings the two closest together is contact. A fit that
+     * leaves them far apart is not trustworthy, so the caller keeps the
+     * midpoint in that case.
+     */
+    private fun meetingTime(toss: List<Link>, chain: List<Link>, c: Context): Long? {
+        val flight = chain.take(FLIGHT_FIT_POINTS)
+        if (toss.size < 2 || flight.size < 2) return null
+
+        // Relative to the flight's first frame, in seconds: keeps the fit well
+        // conditioned, since absolute timestamps are large.
+        val origin = c.frames[flight.first().frame].timeMs
+        fun times(links: List<Link>) = DoubleArray(links.size) { (c.frames[links[it].frame].timeMs - origin) / 1000.0 }
+
+        val tossT = times(toss)
+        val flightT = times(flight)
+        val tossX = fit(tossT, DoubleArray(toss.size) { toss[it].x }) ?: return null
+        val tossY = fit(tossT, DoubleArray(toss.size) { toss[it].y }) ?: return null
+        val flightX = fit(flightT, DoubleArray(flight.size) { flight[it].x }) ?: return null
+        val flightY = fit(flightT, DoubleArray(flight.size) { flight[it].y }) ?: return null
+
+        // Solved on the vertical axis alone. The toss is falling and the flight,
+        // heading away from the camera, climbs the screen through perspective, so
+        // the two y-curves cross cleanly. Their 2D separation, by contrast, is
+        // nearly flat around contact: the paths are close for several frames
+        // either side, and the nearest point slid ~10 ms early on every serve.
+        val from = tossT.last()
+        var bestT = Double.NaN
+        var previous = at(flightY, from) - at(tossY, from)
+        var step = from + MEETING_STEP_S
+        while (step <= 0.0) {
+            val gap = at(flightY, step) - at(tossY, step)
+            if (gap == 0.0 || (gap < 0) != (previous < 0)) {
+                bestT = step
+                break
+            }
+            previous = gap
+            step += MEETING_STEP_S
+        }
+        if (bestT.isNaN()) return null
+
+        // A crossing with the ball somewhere else horizontally is not contact.
+        val bestDistance = abs(at(flightX, bestT) - at(tossX, bestT))
+        if (bestDistance > MEETING_MAX_GAP_PX) return null
+        return origin + (bestT * 1000).roundToLong()
+    }
+
+    /** Least-squares `v(t) = c0 + c1 t + c2 t²`, dropping to a line when given only two points. */
+    private fun fit(t: DoubleArray, v: DoubleArray): DoubleArray? {
+        val degree = if (t.size >= 3) 2 else 1
+        val n = degree + 1
+        val a = Array(n) { DoubleArray(n + 1) }
+        for (row in 0 until n) {
+            for (col in 0 until n) a[row][col] = t.indices.sumOf { pow(t[it], row + col) }
+            a[row][n] = t.indices.sumOf { pow(t[it], row) * v[it] }
+        }
+        for (col in 0 until n) {
+            val pivot = (col until n).maxByOrNull { abs(a[it][col]) } ?: return null
+            if (abs(a[pivot][col]) < 1e-12) return null
+            val swap = a[col]; a[col] = a[pivot]; a[pivot] = swap
+            for (row in 0 until n) {
+                if (row == col) continue
+                val factor = a[row][col] / a[col][col]
+                for (k in col..n) a[row][k] -= factor * a[col][k]
+            }
+        }
+        return DoubleArray(3) { if (it < n) a[it][n] / a[it][it] else 0.0 }
+    }
+
+    private fun at(coefficients: DoubleArray, t: Double) =
+        coefficients[0] + coefficients[1] * t + coefficients[2] * t * t
+
+    private fun pow(base: Double, exponent: Int): Double {
+        var result = 1.0
+        repeat(exponent) { result *= base }
+        return result
+    }
+
+    /**
+     * The blobs falling nearly vertically onto [blob], one per frame, oldest
+     * first — or null if there is no such track. Not merely *a* blob above the
+     * head: stray motion there (tree leaves on real footage, random clutter in
+     * the tests) read as the toss and made contact ~40 ms late, a 162 km/h
+     * serve reading 180.
+     */
+    private fun fallingTrackEndingAt(blob: BallCandidate, frame: Int, c: Context): List<Link>? {
+        val track = mutableListOf(Link(frame, 0, blob.x, blob.y))
         var current = blob
         for (back in 1 until TOSS_TRACK_FRAMES) {
             current = c.blobs[frame - back].firstOrNull { previous ->
                 val dy = current.y - previous.y
                 abs(current.x - previous.x) <= TOSS_MAX_DRIFT_PX && dy in TOSS_MIN_FALL_PX..TOSS_MAX_FALL_PX
-            } ?: return false
+            } ?: return null
+            track += Link(frame - back, 0, current.x, current.y)
         }
-        return true
+        return track.reversed()
     }
 
     /**
@@ -535,6 +637,15 @@ object ServeFlight {
     private const val MAX_RACKET_UP_TO_CONTACT_MS = 800L
     private const val CONTACT_LOOKBACK_FRAMES = 12
     private const val CONTACT_NEAR_X_PX = 260.0
+
+    /** Flight points used to extrapolate back to contact: enough to fit a curve, few enough to stay near contact. */
+    private const val FLIGHT_FIT_POINTS = 4
+
+    /** Resolution of the search for the moment toss and flight meet. Finer than a frame, which is the point. */
+    private const val MEETING_STEP_S = 0.001
+
+    /** How close the two extrapolations must come before the meeting point is believed, in pixels. */
+    private const val MEETING_MAX_GAP_PX = 120.0
 
     /** A toss's last frames before contact, on 60 fps footage: 3 frames, nearly vertical, falling 1-40 px each. */
     private const val TOSS_TRACK_FRAMES = 3

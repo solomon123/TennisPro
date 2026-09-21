@@ -116,7 +116,18 @@ class ServeFlightTest {
      * contact, then the flight — plus random noise blobs and a static
      * "light pole" that never moves.
      */
-    private fun scenario(velocity: DoubleArray, intoNet: Boolean = false, seed: Int = 1): Scenario {
+    private fun scenario(
+        velocity: DoubleArray,
+        intoNet: Boolean = false,
+        seed: Int = 1,
+        /**
+         * Last frame after contact on which the ball is still invisible. The
+         * racket hides it for a frame or two; on real 60 fps footage the ball
+         * also comes off the strings too blurred and too large to pass
+         * [MotionBlobs]' size filter, so the track starts several frames late.
+         */
+        lastBlindFrame: Int = 1,
+    ): Scenario {
         val random = Random(seed)
         val feet = doubleArrayOf(3.2, -0.3)
         val contact = doubleArrayOf(feet[0], feet[1] + 0.4, 2.6)
@@ -128,7 +139,7 @@ class ServeFlightTest {
             val blobs = mutableListOf<BallCandidate>()
             val sinceContact = frame - contactFrame
             val ball: PixelPoint? = when {
-                sinceContact in -2..1 -> null // behind the racket
+                sinceContact in -2..lastBlindFrame -> null // behind the racket, then too blurred to pass as a ball
                 sinceContact < 0 -> {
                     // The toss falling onto the contact point from a 3.4 m apex.
                     val s = -sinceContact / fps
@@ -197,6 +208,32 @@ class ServeFlightTest {
         assertTrue("margin ${outcome.call.marginMeters}", outcome.call.marginMeters in 0.25..0.6)
         assertTrue("contact ${outcome.contactMs} vs ${s.contactMs}", abs(outcome.contactMs - s.contactMs) <= 40)
         assertTrue(outcome.errorBandPercent in 5.0..15.0)
+    }
+
+    /**
+     * The field bug this guards: on the 2026-09-11 recording the ball's first
+     * frames after contact were dropped by [MotionBlobs]' size filter — off the
+     * strings it is large and smeared — so the flight was first seen three or
+     * four frames late. Taking contact as the midpoint of toss-last and
+     * flight-first then put it ~50 ms late, shortening the flight and reading
+     * every serve about 10% fast.
+     */
+    @Test
+    fun `a serve whose first frames are too blurred to detect is still measured`() {
+        val launch = 45.0 // 162 km/h
+        val s = scenario(
+            aimed(launch, targetX = 5.5, targetY = 17.0, downDegrees = 5.0),
+            lastBlindFrame = 4,
+        )
+
+        val outcome = ServeFlight.analyze(s.frames, s.proposal, homography, CourtFormat.SINGLES, fps)
+
+        assertTrue("expected a measured serve, got ${describe(s, outcome)}", outcome is ServeOutcome.Measured)
+        outcome as ServeOutcome.Measured
+        assertTrue("contact ${outcome.contactMs} vs ${s.contactMs}", abs(outcome.contactMs - s.contactMs) <= 25)
+        // Was +2.9% on the midpoint rule this replaced; the tolerance is set to
+        // catch a regression back toward it rather than to describe the limit.
+        assertEquals(describe(s, outcome), launch * 3.6, outcome.kmh, launch * 3.6 * 0.03)
     }
 
     @Test
