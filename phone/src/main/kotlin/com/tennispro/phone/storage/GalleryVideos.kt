@@ -108,13 +108,23 @@ object GalleryVideos {
         return Published(uri, expected)
     }
 
-    /** Removes a published video. Missing or already-deleted rows count as success. */
-    fun delete(context: Context, uri: Uri): Boolean = runCatching {
-        context.contentResolver.delete(uri, null, null)
-        true
-    }.getOrElse {
-        Log.w(TAG, "Could not delete $uri from the gallery", it)
-        false
+    /**
+     * Removes a published video.
+     *
+     * The app owns the rows it inserts, but only while they stay ordinary rows:
+     * once the gallery moves one to its own trash the app loses access and the
+     * delete throws `SecurityException`. That is the user having deleted it
+     * there, so it counts as done — a row a normal query can no longer see is
+     * gone as far as this app is concerned. Only a video that is demonstrably
+     * still present and still refuses to be deleted is worth a warning, since
+     * that one really does stay behind in the gallery.
+     */
+    fun delete(context: Context, uri: Uri): Boolean {
+        val failure = runCatching { context.contentResolver.delete(uri, null, null) }.exceptionOrNull()
+            ?: return true
+        if (presence(context, uri) == Presence.MISSING) return true
+        Log.w(TAG, "Could not delete $uri from the gallery; it will stay there", failure)
+        return false
     }
 
     /**
