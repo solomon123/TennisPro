@@ -329,10 +329,26 @@ object ServeFlight {
         val launch = launchSpeed(distance, flightSeconds)
         val kmh = launch * 3.6
 
+        val (errorX, errorY) = bouncePositionError(c.homography, bouncePixel)
+
         val courtWidth = CourtDimensions.widthFor(c.format)
         val offCourtSideways = bounce.xMeters < -SIDEWAYS_MARGIN_M || bounce.xMeters > courtWidth + SIDEWAYS_MARGIN_M
+
+        /*
+         * A serve's first bounce cannot be past the far baseline — the court ends
+         * there. When one appears to be, the court model or the track is wrong,
+         * and both the speed and the line call computed from it are worthless.
+         * Filming a televised match on 2026-09-21 produced exactly this: a bounce
+         * placed 1.6 m beyond the baseline, reported as a confident OUT call with
+         * a 0.33 m error band, from a serve that had landed in the box.
+         *
+         * Judged against the bounce's own uncertainty, which grows with distance
+         * from the camera, so a genuinely deep serve measured loosely is kept.
+         */
+        val offCourtLong = bounce.yMeters - errorY > CourtDimensions.LENGTH_M
+
         if (flightSeconds !in MIN_FLIGHT_S..MAX_FLIGHT_S || kmh !in MIN_KMH..MAX_KMH ||
-            bounce.yMeters <= netY + NET_MARGIN_M || offCourtSideways
+            bounce.yMeters <= netY + NET_MARGIN_M || offCourtSideways || offCourtLong
         ) {
             return Evaluation(
                 RANK_IMPLAUSIBLE,
@@ -341,7 +357,6 @@ object ServeFlight {
             )
         }
 
-        val (errorX, errorY) = bouncePositionError(c.homography, bouncePixel)
         val call = ServiceLineCall.call(bounce, serverX = c.contactPosition[0], format = c.format, errorXMeters = errorX, errorYMeters = errorY)
 
         return Evaluation(

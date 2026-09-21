@@ -247,6 +247,32 @@ class ServeFlightTest {
         assertEquals(describe(s, outcome), launch * 3.6, (outcome as ServeOutcome.Measured).kmh, launch * 3.6 * 0.06)
     }
 
+    /**
+     * A serve cannot first bounce past the far baseline; the court ends there.
+     * Filming a televised match produced a track that appeared to, and the app
+     * reported it as a measured serve with a confident OUT call. Saying nothing
+     * is the honest answer when the geometry is impossible.
+     */
+    @Test
+    fun `a bounce past the far baseline is not measured`() {
+        // Flat and fast enough to first land beyond the back of the court.
+        val s = scenario(aimed(62.0, targetX = 4.5, targetY = 26.5, downDegrees = 0.5), seed = 5)
+
+        // Without this the test could pass because the serve was rejected for some
+        // other reason, or never bounced past the baseline at all.
+        assertTrue(
+            "simulated bounce ${s.bounceAt?.get(1)} should be past the 23.77 m baseline",
+            (s.bounceAt?.get(1) ?: 0.0) > 23.77,
+        )
+
+        val outcome = ServeFlight.analyze(s.frames, s.proposal, homography, CourtFormat.SINGLES, fps)
+
+        assertTrue(
+            "a bounce past the baseline must not be measured, got ${describe(s, outcome)}",
+            outcome !is ServeOutcome.Measured,
+        )
+    }
+
     @Test
     fun `a serve into the net is a net fault, with no speed claimed`() {
         val s = scenario(aimed(40.0, targetX = 5.5, targetY = 17.0, downDegrees = 9.0), intoNet = true, seed = 3)
