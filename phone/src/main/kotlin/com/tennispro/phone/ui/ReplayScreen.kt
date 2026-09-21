@@ -15,7 +15,10 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -379,11 +382,10 @@ private fun ServesSection(
                 Text("Finding serves…$percent", style = MaterialTheme.typography.bodySmall)
             }
 
-            result == null -> Row(verticalAlignment = Alignment.CenterVertically) {
+            result == null -> ActionRow {
                 OutlinedButton(onClick = { ServeScanService.enqueue(context, session.meta.id) }) {
                     Text("Find serves")
                 }
-                Spacer(Modifier.width(8.dp))
                 ShareRecordingButton(session, matchStorage)
                 if (session.meta.id != recordingSessionId) DeleteRecordingButton(session, matchStorage, onDeleted)
             }
@@ -411,7 +413,7 @@ private fun ServesSection(
                         }
                     }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                ActionRow {
                     TextButton(onClick = { ServeScanService.enqueue(context, session.meta.id) }) { Text("Scan again") }
                     ShareRecordingButton(session, matchStorage)
                     if (session.meta.id != recordingSessionId) DeleteRecordingButton(session, matchStorage, onDeleted)
@@ -448,6 +450,24 @@ private fun overlayCourt(serves: SessionServes?, positionMs: Long, saved: Calibr
         saved != null -> OverlayCourt(saved, "Court lines from the saved calibration")
         else -> null
     }
+}
+
+/**
+ * The buttons under a recording: Find serves / Scan again, Share, Delete.
+ *
+ * A [Row] would keep all three on one line and wrap the *text* inside the last
+ * button instead, which split "Delete" across two lines once Share was added.
+ * Flowing moves the whole button down instead, which is what a reader expects
+ * of a row of buttons that has run out of width.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ActionRow(content: @Composable RowScope.() -> Unit) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp),
+        content = content,
+    )
 }
 
 /**
