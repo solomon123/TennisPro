@@ -260,15 +260,17 @@ class RecordingService : LifecycleService() {
                         // what was requested at capture time, confirmed via
                         // ffprobe. Patched after the fact rather than at capture
                         // time since there is no capture-time knob that reaches it.
-                        if (_facing.value == CameraFacing.FRONT) {
-                            lifecycleScope.launch(Dispatchers.IO) {
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            if (_facing.value == CameraFacing.FRONT) {
                                 runCatching { Mp4Rotation.stripVideoRotation(storage.videoFileFor(session)) }
                                     .onFailure { Log.w(TAG, "Could not fix front-camera recording rotation", it) }
-                                // Only once the file is final: the scan reads it frame by frame.
-                                ServeScanService.enqueue(this@RecordingService, session.meta.id)
                             }
-                        } else {
-                            ServeScanService.enqueue(this, session.meta.id)
+                            // Into the gallery before the scan, and only once the
+                            // file is final — the rotation fix above rewrites it,
+                            // and publishing moves it out of the session directory.
+                            // The scan then reads it back through its new URI.
+                            storage.exportToGallery(session)
+                            ServeScanService.enqueue(this@RecordingService, session.meta.id)
                         }
                     }
 

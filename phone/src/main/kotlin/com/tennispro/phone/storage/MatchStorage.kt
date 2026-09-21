@@ -1,6 +1,7 @@
 package com.tennispro.phone.storage
 
 import android.content.Context
+import android.net.Uri
 import android.os.Environment
 import android.util.Log
 import com.tennispro.core.court.CalibrationPoints
@@ -28,6 +29,15 @@ data class SessionMeta(
     val durationMs: Long? = null,
     val resolution: String? = null,
     val frameRate: Int? = null,
+    /**
+     * Where the video went once it was published to the gallery, as a MediaStore
+     * `content://` URI. Null for a recording still being written, one made before
+     * gallery export existed, or one whose export failed — in all three the file
+     * under [MatchSession.dir] is still the video.
+     */
+    val videoUri: String? = null,
+    /** Size of the published video, so storage totals stay right once it has left [MatchSession.dir]. */
+    val videoBytes: Long? = null,
 )
 
 /**
@@ -72,7 +82,19 @@ data class MatchSession(
     val bookmarks: List<Bookmark>,
     val serves: SessionServes? = null,
 ) {
-    val sizeBytes: Long get() = dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+    /**
+     * Everything this recording occupies, wherever it lives. Once the video is in
+     * the gallery it is no longer under [dir], but it is still this recording's
+     * storage and deleting the recording still frees it.
+     */
+    val sizeBytes: Long
+        get() = dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } + (meta.videoBytes ?: 0L)
+
+    /** The gallery entry holding this recording's video, if it was published. */
+    val galleryUri: Uri? get() = meta.videoUri?.let { runCatching { Uri.parse(it) }.getOrNull() }
+
+    /** True once the video lives in the gallery rather than in [dir]. */
+    val inGallery: Boolean get() = galleryUri != null
 }
 
 /**
@@ -147,10 +169,50 @@ class MatchStorage(private val context: Context) {
             .mapNotNull { dir -> readSession(dir) }
             .sortedByDescending { it.meta.startedAtEpochMs }
 
-    fun deleteSession(session: MatchSession): Boolean = session.dir.deleteRecursively()
+    /**
+     * Deletes the recording wherever it lives: the session directory, and the
+     * gallery copy if the video was published there. A recording the user
+     * deleted in the app must not stay in their gallery.
+     */
+    fun deleteSession(session: MatchSession): Boolean {
+        session.galleryUri?.let { GalleryVideos.delete(context, it) }
+        return session.dir.deleteRecursively()
+    }
 
-    /** Total bytes used by all sessions, for the "free up space" affordance. */
-    fun totalBytes(): Long = root.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+    /**
+     * Moves this session's video into the gallery and records where it went.
+     * A no-op if it is already published or there is nothing to publish; safe to
+     * call again after a failed attempt, which leaves the local file in place.
+     */
+    fun exportToGallery(session: MatchSession): MatchSession {
+        if (session.meta.videoUri != null) return session
+        val published = GalleryVideos.publish(
+            context = context,
+            file = videoFileFor(session),
+            displayName = "TennisReplay ${session.meta.id}.mp4",
+            takenAtEpochMs = session.meta.startedAtEpochMs,
+        ) ?: return session
+
+        val meta = session.meta.copy(videoUri = published.uri.toString(), videoBytes = published.bytes)
+        writeMeta(session.dir, meta)
+        return session.copy(meta = meta)
+    }
+
+    /**
+     * Where to read this session's video from, for playback, scanning or sharing.
+     * A published recording is a `content://` URI; one not yet exported is still
+     * the file in the session directory. Every reader takes both.
+     */
+    fun videoUriFor(session: MatchSession): Uri =
+        session.galleryUri ?: Uri.fromFile(videoFileFor(session))
+
+    /**
+     * Total bytes used by all sessions, for the "free up space" affordance.
+     * Sums each session rather than walking the directory, so videos published
+     * to the gallery — no longer under [root] but still this app's recordings,
+     * and still freed by deleting them — are counted.
+     */
+    fun totalBytes(): Long = listSessions().sumOf { it.sizeBytes }
 
     /** Free bytes on the volume the recordings live on. */
     fun freeBytes(): Long = runCatching { root.usableSpace }.getOrDefault(0L)

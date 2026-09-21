@@ -1,5 +1,6 @@
 package com.tennispro.phone.ui
 
+import android.content.Intent
 import android.graphics.Bitmap
 import android.media.MediaPlayer
 import android.net.Uri
@@ -8,6 +9,7 @@ import android.view.MotionEvent
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.MediaController
+import android.widget.Toast
 import android.widget.VideoView
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -179,7 +181,11 @@ private fun SessionReplay(
     recordingSessionId: String?,
     onDeleted: () -> Unit,
 ) {
-    val frameSource = remember(session) { runCatching { VideoFrameSource(matchStorage.videoFileFor(session)) }.getOrNull() }
+    val context = LocalContext.current
+    val videoUri = remember(session) { matchStorage.videoUriFor(session) }
+    val frameSource = remember(session) {
+        runCatching { VideoFrameSource(context, videoUri) }.getOrNull()
+    }
     DisposableEffect(frameSource) { onDispose { frameSource?.close() } }
 
     var mode by remember { mutableStateOf(ReplayMode.SCRUB) }
@@ -241,7 +247,7 @@ private fun SessionReplay(
             when (mode) {
                 ReplayMode.PLAY -> key(playRequest) {
                     VideoPlayer(
-                        videoFile = matchStorage.videoFileFor(session),
+                        videoUri = videoUri,
                         startAtMs = playFromMs,
                         // Bottom padding: without it the video area runs flush to the
                         // screen edge, so MediaController's floating play/pause/seek bar
@@ -370,6 +376,7 @@ private fun ServesSection(
                     Text("Find serves")
                 }
                 Spacer(Modifier.width(8.dp))
+                ShareRecordingButton(session, matchStorage)
                 if (session.meta.id != recordingSessionId) DeleteRecordingButton(session, matchStorage, onDeleted)
             }
 
@@ -398,6 +405,7 @@ private fun ServesSection(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { ServeScanService.enqueue(context, session.meta.id) }) { Text("Scan again") }
+                    ShareRecordingButton(session, matchStorage)
                     if (session.meta.id != recordingSessionId) DeleteRecordingButton(session, matchStorage, onDeleted)
                 }
             }
@@ -432,6 +440,51 @@ private fun overlayCourt(serves: SessionServes?, positionMs: Long, saved: Calibr
         saved != null -> OverlayCourt(saved, "Court lines from the saved calibration")
         else -> null
     }
+}
+
+/**
+ * Hands the video to WhatsApp, Telegram or anything else that takes a video,
+ * through the system share sheet.
+ *
+ * Shares the gallery URI rather than a file: a `file://` URI thrown at another
+ * app is a `FileUriExposedException`, and the receiving app has no rights to the
+ * app's own storage anyway. A recording made before gallery export existed is
+ * published first, which is also what gives the other app something it can read.
+ *
+ * These files are large — hundreds of megabytes for a few minutes — and most
+ * messaging apps will re-compress or refuse them. Nothing here can change that;
+ * the share sheet reports it in its own words.
+ */
+@Composable
+private fun ShareRecordingButton(session: MatchSession, matchStorage: MatchStorage) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var preparing by remember { mutableStateOf(false) }
+
+    TextButton(
+        enabled = !preparing,
+        onClick = {
+            preparing = true
+            scope.launch {
+                val uri = withContext(Dispatchers.IO) {
+                    matchStorage.exportToGallery(session).galleryUri
+                }
+                preparing = false
+                if (uri == null) {
+                    Toast.makeText(context, "Could not prepare the video to share", Toast.LENGTH_LONG).show()
+                    return@launch
+                }
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "video/mp4"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, "TennisReplay — " + session.meta.id)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                runCatching { context.startActivity(Intent.createChooser(send, "Share recording")) }
+                    .onFailure { Toast.makeText(context, "No app to share a video with", Toast.LENGTH_LONG).show() }
+            }
+        },
+    ) { Text(if (preparing) "Preparing…" else "Share") }
 }
 
 /**
@@ -495,7 +548,7 @@ private fun ReplayModeChip(label: String, selected: Boolean, onClick: () -> Unit
  * widgets are enough for "watch the match back."
  */
 @Composable
-private fun VideoPlayer(videoFile: File, startAtMs: Long, modifier: Modifier = Modifier) {
+private fun VideoPlayer(videoUri: Uri, startAtMs: Long, modifier: Modifier = Modifier) {
     AndroidView(
         modifier = modifier.fillMaxSize(),
         factory = { context ->
@@ -522,7 +575,7 @@ private fun VideoPlayer(videoFile: File, startAtMs: Long, modifier: Modifier = M
                     Gravity.CENTER,
                 ),
             )
-            videoView.setVideoURI(Uri.fromFile(videoFile))
+            videoView.setVideoURI(videoUri)
             // VideoView anchors its MediaController to its parent, this container,
             // so the bar spans the container. The picture used to be drawn at 70%
             // of its fitted size, leaving the bar sticking out past both edges and

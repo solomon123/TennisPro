@@ -1,14 +1,15 @@
 package com.tennispro.phone.replay
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.media.Image
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.net.Uri
 import android.util.Log
 import android.util.Size
 import com.tennispro.core.vision.GrayscaleFrame
-import java.io.File
 
 /**
  * Decodes a recorded session's frames sequentially — fast, unlike
@@ -36,13 +37,13 @@ import java.io.File
  * and did not fix it). `getOutputImage` reads directly from the codec's own
  * output buffer and does not have this failure mode.
  */
-class FrameSequenceSource(private val videoFile: File) {
+class FrameSequenceSource(private val context: Context, private val videoUri: Uri) {
 
     /** Duration and frame size from the container, or null if there is no readable video track. */
     fun videoInfo(): VideoInfo? {
         val extractor = MediaExtractor()
         return try {
-            extractor.setDataSource(videoFile.absolutePath)
+            extractor.setDataSource(context, videoUri, null)
             val track = selectVideoTrack(extractor) ?: return null
             val format = extractor.getTrackFormat(track)
             VideoInfo(
@@ -50,7 +51,7 @@ class FrameSequenceSource(private val videoFile: File) {
                 size = Size(format.getInteger(MediaFormat.KEY_WIDTH), format.getInteger(MediaFormat.KEY_HEIGHT)),
             )
         } catch (e: Exception) {
-            Log.w(TAG, "Could not read video info for ${videoFile.name}", e)
+            Log.w(TAG, "Could not read video info for $videoUri", e)
             null
         } finally {
             runCatching { extractor.release() }
@@ -112,10 +113,10 @@ class FrameSequenceSource(private val videoFile: File) {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
-            extractor.setDataSource(videoFile.absolutePath)
+            extractor.setDataSource(context, videoUri, null)
             val trackIndex = selectVideoTrack(extractor)
             if (trackIndex == null) {
-                Log.w(TAG, "No video track in ${videoFile.name}")
+                Log.w(TAG, "No video track in $videoUri")
                 return
             }
             val format = extractor.getTrackFormat(trackIndex)

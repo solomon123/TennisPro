@@ -1,9 +1,10 @@
 package com.tennispro.phone.replay
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.util.Log
-import java.io.File
 
 /**
  * Pulls still frames out of a recorded session's video file — the "video
@@ -17,11 +18,14 @@ import java.io.File
  * walking many frames in order, and is worth building once Phase 3/4's
  * detector actually needs that throughput; this is deliberately not that yet.
  */
-class VideoFrameSource(videoFile: File) : AutoCloseable {
+class VideoFrameSource(context: Context, videoUri: Uri) : AutoCloseable {
 
     private val retriever = MediaMetadataRetriever().apply {
-        runCatching { setDataSource(videoFile.absolutePath) }
-            .onFailure { Log.w(TAG, "Could not open ${videoFile.name} for replay", it) }
+        // Context + Uri rather than a path: a recording published to the gallery
+        // is a content:// URI the app no longer has a file for. This form also
+        // accepts the file:// URI of one not yet exported.
+        runCatching { setDataSource(context, videoUri) }
+            .onFailure { Log.w(TAG, "Could not open $videoUri for replay", it) }
     }
 
     val durationMs: Long by lazy {

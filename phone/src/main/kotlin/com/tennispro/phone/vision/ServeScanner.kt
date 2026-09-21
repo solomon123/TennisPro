@@ -51,7 +51,7 @@ class ServeScanner(
     private class Court(val points: CalibrationPoints, val homography: Homography)
 
     fun scan(session: MatchSession, onProgress: (Float) -> Unit, isCancelled: () -> Boolean): SessionServes {
-        val source = FrameSequenceSource(storage.videoFileFor(session))
+        val source = FrameSequenceSource(context, storage.videoUriFor(session))
         val info = source.videoInfo() ?: return failed("Could not read this recording's video")
         val width = info.size.width
         val height = info.size.height
