@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.sp
 import com.tennispro.core.scoring.ScoreFormat
 import com.tennispro.core.scoring.projection
 import com.tennispro.phone.calibration.CalibrationStorage
+import com.tennispro.core.vision.SpeedUnit
 import com.tennispro.phone.camera.CameraFacing
 import com.tennispro.phone.camera.CaptureState
 import com.tennispro.phone.camera.RecordingService
@@ -76,6 +77,8 @@ fun HomeScreen(
     onCalibrate: () -> Unit,
     onReplay: () -> Unit,
     onAbout: () -> Unit,
+    speedUnit: SpeedUnit,
+    onSpeedUnit: (SpeedUnit) -> Unit,
 ) {
     val activeMatch by matchController.match.collectAsState()
     var sessions by remember { mutableStateOf<List<MatchSession>>(emptyList()) }
@@ -140,6 +143,9 @@ fun HomeScreen(
                                 onAbout()
                             },
                         )
+                        HorizontalDivider()
+                        SpeedUnitMenuItem("Speed: km/h", SpeedUnit.KMH, speedUnit, onSpeedUnit) { menuOpen = false }
+                        SpeedUnitMenuItem("Speed: mph", SpeedUnit.MPH, speedUnit, onSpeedUnit) { menuOpen = false }
                         HorizontalDivider()
                         CameraFacingMenuItem("Camera: back", CameraFacing.BACK, facing, enabled = !recording) {
                             menuOpen = false
@@ -224,6 +230,7 @@ fun HomeScreen(
             sessions = sessions,
             storage = storage,
             recordingSessionId = (captureState as? CaptureState.Recording)?.session?.meta?.id,
+            speedUnit = speedUnit,
             onChanged = { reloadToken++ },
             subtitle = "${formatBytes(totalBytes)} used · ${formatBytes(freeBytes)} free",
             emptyText = "Nothing recorded yet. Raw footage is kept in full — clear it here " +
@@ -254,6 +261,24 @@ private fun HomeRow(title: String, detail: String, onClick: () -> Unit) {
         }
         Text("›", fontSize = 26.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
+}
+
+@Composable
+private fun SpeedUnitMenuItem(
+    label: String,
+    value: SpeedUnit,
+    current: SpeedUnit,
+    onPick: (SpeedUnit) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    DropdownMenuItem(
+        text = { Text(if (value == current) "✓  $label" else "     $label") },
+        onClick = {
+            onDismiss()
+            onPick(value)
+        },
+        enabled = value != current,
+    )
 }
 
 @Composable

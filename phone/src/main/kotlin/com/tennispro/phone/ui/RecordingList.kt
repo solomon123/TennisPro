@@ -31,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tennispro.phone.storage.DetectedServe
+import com.tennispro.core.vision.SpeedUnit
 import com.tennispro.phone.storage.MatchSession
 import com.tennispro.phone.storage.MatchStorage
 import com.tennispro.phone.storage.SessionServes
@@ -58,6 +59,7 @@ fun RecordingList(
     sessions: List<MatchSession>,
     storage: MatchStorage,
     recordingSessionId: String?,
+    speedUnit: SpeedUnit,
     onChanged: () -> Unit,
     modifier: Modifier = Modifier,
     subtitle: String? = null,
@@ -186,7 +188,7 @@ fun RecordingList(
                                 overflow = TextOverflow.Ellipsis,
                             )
                             Text(
-                                details(session, sizes[session.meta.id] ?: 0L),
+                                details(session, sizes[session.meta.id] ?: 0L, speedUnit),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 2,
@@ -247,10 +249,10 @@ fun RecordingList(
 internal fun startedLabel(session: MatchSession): String =
     SimpleDateFormat("EEE d MMM, HH:mm", Locale.getDefault()).format(Date(session.meta.startedAtEpochMs))
 
-private fun details(session: MatchSession, sizeBytes: Long): String = buildString {
+private fun details(session: MatchSession, sizeBytes: Long, speedUnit: SpeedUnit): String = buildString {
     append(formatBytes(sizeBytes))
     session.meta.durationMs?.let { append(" · ${formatElapsed(it)}") }
-    session.serves?.let { append(" · ${servesSummary(it)}") }
+    session.serves?.let { append(" · ${servesSummary(it, speedUnit)}") }
     if (session.bookmarks.isNotEmpty()) append(" · ${session.bookmarks.size} marked")
 }
 
@@ -272,10 +274,10 @@ internal fun callLabel(serve: DetectedServe): String? {
 private fun formatDistance(meters: Double): String =
     if (meters < 1.0) "${(meters * 100).roundToInt()} cm" else "%.1f m".format(meters)
 
-internal fun servesSummary(serves: SessionServes): String {
+internal fun servesSummary(serves: SessionServes, speedUnit: SpeedUnit): String {
     if (serves.error != null) return "Serve scan didn't run"
     val count = serves.serves.size
     if (count == 0) return "No serves found"
     val fastest = serves.serves.mapNotNull { it.speedKmh }.maxOrNull()
-    return "$count serve${if (count == 1) "" else "s"}" + (fastest?.let { " · fastest ${it.roundToInt()} km/h" } ?: "")
+    return "$count serve${if (count == 1) "" else "s"}" + (fastest?.let { " · fastest ${speedUnit.format(it)}" } ?: "")
 }

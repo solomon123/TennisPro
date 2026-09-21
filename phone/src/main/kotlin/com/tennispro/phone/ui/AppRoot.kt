@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.tennispro.core.vision.SpeedUnit
 import com.tennispro.phone.TennisProApp
 import androidx.compose.runtime.collectAsState
 import com.tennispro.phone.camera.CaptureState
@@ -34,6 +35,8 @@ fun AppRoot(
     // MatchController listening for watch gestures and restores any in-progress
     // match as soon as the app is up, not on first visit to the Score screen.
     val matchController = app.matchController
+    // Display only, so it lives with the UI rather than with the results it formats.
+    var speedUnit by remember { mutableStateOf(app.speedPreferences.load()) }
     // Which recording is being written, so no screen offers to delete it mid-recording.
     val fallbackCaptureState = remember { MutableStateFlow<CaptureState>(CaptureState.Initialising) }
     val captureState = (service?.state ?: fallbackCaptureState).collectAsState().value
@@ -53,6 +56,11 @@ fun AppRoot(
                     onCalibrate = { screen = Screen.CALIBRATE },
                     onReplay = { screen = Screen.REPLAY },
                     onAbout = { screen = Screen.ABOUT },
+                    speedUnit = speedUnit,
+                    onSpeedUnit = {
+                        speedUnit = it
+                        app.speedPreferences.save(it)
+                    },
                 )
 
                 Screen.RECORD -> RecordScreen(
@@ -90,6 +98,7 @@ fun AppRoot(
                 Screen.REPLAY -> ReplayScreen(
                     matchStorage = app.storage,
                     calibrationStorage = app.calibrationStorage,
+                    speedUnit = speedUnit,
                     recordingSessionId = (captureState as? CaptureState.Recording)?.session?.meta?.id,
                     onBack = { screen = Screen.HOME },
                 )

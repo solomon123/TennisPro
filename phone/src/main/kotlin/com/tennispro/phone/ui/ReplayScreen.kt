@@ -67,6 +67,7 @@ import com.tennispro.core.court.Homography
 import com.tennispro.phone.calibration.CalibrationStorage
 import com.tennispro.phone.replay.VideoFrameSource
 import com.tennispro.phone.storage.DetectedServe
+import com.tennispro.core.vision.SpeedUnit
 import com.tennispro.phone.storage.MatchSession
 import com.tennispro.phone.storage.MatchStorage
 import com.tennispro.phone.storage.SessionServes
@@ -95,6 +96,7 @@ fun ReplayScreen(
     matchStorage: MatchStorage,
     calibrationStorage: CalibrationStorage,
     recordingSessionId: String?,
+    speedUnit: SpeedUnit,
     onBack: () -> Unit,
 ) {
     var sessions by remember { mutableStateOf<List<MatchSession>>(emptyList()) }
@@ -152,6 +154,7 @@ fun ReplayScreen(
                 sessions = sessions,
                 storage = matchStorage,
                 recordingSessionId = recordingSessionId,
+                speedUnit = speedUnit,
                 onChanged = { reloadToken++ },
                 emptyText = "No recordings yet. Record a match first, then come back here to step " +
                     "through its frames.",
@@ -171,6 +174,7 @@ fun ReplayScreen(
                 calibrationVersion = calibrationVersion,
                 onCalibrate = { calibrationFrame = it },
                 recordingSessionId = recordingSessionId,
+                speedUnit = speedUnit,
                 onDeleted = {
                     selected = null
                     reloadToken++
@@ -190,6 +194,7 @@ private fun SessionReplay(
     calibrationVersion: Int,
     onCalibrate: (Bitmap) -> Unit,
     recordingSessionId: String?,
+    speedUnit: SpeedUnit,
     onDeleted: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -327,6 +332,7 @@ private fun SessionReplay(
                 serves = serves,
                 matchStorage = matchStorage,
                 recordingSessionId = recordingSessionId,
+                speedUnit = speedUnit,
                 onPlay = { serve ->
                     playFromMs = (serve.contactMs - PLAY_LEAD_MS).coerceAtLeast(0)
                     playRequest++
@@ -365,6 +371,7 @@ private fun ServesSection(
     serves: SessionServes?,
     matchStorage: MatchStorage,
     recordingSessionId: String?,
+    speedUnit: SpeedUnit,
     onPlay: (DetectedServe) -> Unit,
     onDeleted: () -> Unit,
 ) {
@@ -391,7 +398,7 @@ private fun ServesSection(
             }
 
             else -> {
-                Text(servesSummary(result), style = MaterialTheme.typography.labelLarge)
+                Text(servesSummary(result, speedUnit), style = MaterialTheme.typography.labelLarge)
                 result.error?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
@@ -401,7 +408,7 @@ private fun ServesSection(
                         result.serves.forEach { serve ->
                             val label = when {
                                 serve.netFault -> "net"
-                                serve.speedKmh != null -> "${serve.speedKmh.roundToInt()} km/h" + (callLabel(serve)?.let { " · $it" } ?: "")
+                                serve.speedKmh != null -> speedUnit.format(serve.speedKmh) + (callLabel(serve)?.let { " · $it" } ?: "")
                                 else -> "serve"
                             }
                             OutlinedButton(
