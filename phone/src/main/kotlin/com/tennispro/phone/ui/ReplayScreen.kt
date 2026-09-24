@@ -387,6 +387,8 @@ private fun ServesSection(
                 Spacer(Modifier.width(8.dp))
                 val percent = if (scanState.activeSessionId == session.meta.id) " ${(scanState.progress * 100).roundToInt()}%" else " (queued)"
                 Text("Finding serves…$percent", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = { ServeScanService.stop(context, session.meta.id) }) { Text("Stop") }
             }
 
             result == null -> ActionRow {

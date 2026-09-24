@@ -44,6 +44,10 @@ data class ServeScanState(
  *
  * Started automatically when a recording finishes (see [RecordingService]),
  * and from Replay's "Find serves" for recordings made before this existed.
+ * [stop] ends one recording's scan — from Replay or the notification — and
+ * leaves the rest of the queue running and that recording's earlier results
+ * in place: a night recording took several minutes to scan on 2026-09-23,
+ * and there was no way out but killing the app.
  * Service type `mediaProcessing` on Android 15+, which is what it is;
  * `dataSync` below that, where `mediaProcessing` doesn't exist.
  */
@@ -54,6 +58,10 @@ class ServeScanService : Service() {
     private val queue = ArrayDeque<String>()
     private var lastNotifiedPercent = -1
 
+    /** The recording whose scan the user asked to stop; checked between frames. */
+    @Volatile
+    private var stopRequested: String? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -62,9 +70,16 @@ class ServeScanService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val sessionId = intent?.getStringExtra(EXTRA_SESSION_ID)
+        if (intent?.action == ACTION_STOP) {
+            if (sessionId != null) stopScan(sessionId)
+            // Started only to deliver the stop, with nothing to scan: go away again.
+            if (worker?.isActive != true) stopSelf(startId)
+            return START_NOT_STICKY
+        }
+
         startForeground(NOTIFICATION_ID, notification(null, 0), foregroundType())
 
-        val sessionId = intent?.getStringExtra(EXTRA_SESSION_ID)
         synchronized(queue) {
             if (sessionId != null && sessionId != _state.value.activeSessionId && sessionId !in queue) queue.addLast(sessionId)
             _state.value = _state.value.copy(queued = queue.toList())
@@ -90,20 +105,37 @@ class ServeScanService : Service() {
                 val result = scanner.scan(
                     session,
                     onProgress = { progress -> onProgress(sessionId, progress) },
-                    isCancelled = { !scope.isActive },
+                    isCancelled = { !scope.isActive || stopRequested == sessionId },
                 )
                 app.storage.writeServes(session, result)
                 Log.i(TAG, "$sessionId: ${result.serves.size} serves${result.error?.let { " ($it)" } ?: ""}")
             } catch (e: CancellationException) {
-                throw e
+                // The service is going away: stop the whole queue. A stop the user asked
+                // for ends only this recording, and nothing is written, so a stopped
+                // rescan leaves the previous results as they were.
+                if (!scope.isActive || stopRequested != sessionId) throw e
+                Log.i(TAG, "$sessionId: scan stopped")
             } catch (e: Exception) {
                 // One bad recording (unreadable file, model failure) shouldn't stop the queue.
                 Log.e(TAG, "Serve scan failed for $sessionId", e)
+            } finally {
+                if (stopRequested == sessionId) stopRequested = null
             }
         }
         _state.value = ServeScanState()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /** Stops [sessionId]'s scan if it is the one running, or takes it off the queue. */
+    private fun stopScan(sessionId: String) {
+        synchronized(queue) {
+            if (_state.value.activeSessionId == sessionId) {
+                stopRequested = sessionId
+            } else if (queue.remove(sessionId)) {
+                _state.value = _state.value.copy(queued = queue.toList())
+            }
+        }
     }
 
     private fun onProgress(sessionId: String, progress: Float) {
@@ -142,7 +174,7 @@ class ServeScanService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_record)
             .setContentTitle(getString(R.string.serve_scan_title))
             .setContentText(sessionId ?: getString(R.string.serve_scan_starting))
@@ -151,7 +183,16 @@ class ServeScanService : Service() {
             .setOngoing(true)
             .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-            .build()
+        if (sessionId != null) {
+            val stop = PendingIntent.getService(
+                this,
+                0,
+                stopIntent(this, sessionId),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            builder.addAction(0, getString(R.string.serve_scan_stop), stop)
+        }
+        return builder.build()
     }
 
     private fun createNotificationChannel() {
@@ -168,6 +209,7 @@ class ServeScanService : Service() {
         private const val CHANNEL_ID = "serve_scan"
         private const val NOTIFICATION_ID = 1002
         private const val EXTRA_SESSION_ID = "com.tennispro.phone.extra.SESSION_ID"
+        private const val ACTION_STOP = "com.tennispro.phone.action.STOP_SERVE_SCAN"
 
         private val _state = MutableStateFlow(ServeScanState())
         val state: StateFlow<ServeScanState> = _state.asStateFlow()
@@ -183,5 +225,18 @@ class ServeScanService : Service() {
                 Intent(context, ServeScanService::class.java).putExtra(EXTRA_SESSION_ID, sessionId),
             )
         }.onFailure { Log.w(TAG, "Could not start serve scan for $sessionId", it) }.isSuccess
+
+        /**
+         * Stops [sessionId]'s scan, or takes it off the queue. A plain start, not a
+         * foreground one: it only ever reaches a service that is already running
+         * in the foreground, from Replay or the service's own notification.
+         */
+        fun stop(context: Context, sessionId: String) {
+            runCatching { context.startService(stopIntent(context, sessionId)) }
+                .onFailure { Log.w(TAG, "Could not stop serve scan for $sessionId", it) }
+        }
+
+        private fun stopIntent(context: Context, sessionId: String) =
+            Intent(context, ServeScanService::class.java).setAction(ACTION_STOP).putExtra(EXTRA_SESSION_ID, sessionId)
     }
 }
