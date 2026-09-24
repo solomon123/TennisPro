@@ -58,9 +58,17 @@ class ServeFlightTest {
         }
 
         fun project(x: Double, y: Double, z: Double): PixelPoint {
-            val c = DoubleArray(3) { r1[it] * x + r2[it] * y + r3[it] * z + t[it] }
+            val c = cameraSpace(x, y, z)
             return PixelPoint((focal * c[0] / c[2] + cx).toFloat(), (focal * c[1] / c[2] + cy).toFloat())
         }
+
+        /** The ball's area on screen at (x, y, z): a 6.7 cm disc at that depth. */
+        fun ballPixels(x: Double, y: Double, z: Double): Int {
+            val d = focal * 0.067 / cameraSpace(x, y, z)[2]
+            return maxOf(3, (Math.PI / 4 * d * d).toInt())
+        }
+
+        private fun cameraSpace(x: Double, y: Double, z: Double) = DoubleArray(3) { r1[it] * x + r2[it] * y + r3[it] * z + t[it] }
 
         private fun norm(v: DoubleArray) = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
     }
@@ -127,6 +135,12 @@ class ServeFlightTest {
          * [MotionBlobs]' size filter, so the track starts several frames late.
          */
         lastBlindFrame: Int = 1,
+        /** Scales the toss's blobs, to fake a ball too small to be the server's. */
+        tossSizeFactor: Double = 1.0,
+        /** No toss at all, as when it is too large for [MotionBlobs]. */
+        hideToss: Boolean = false,
+        /** Frames after contact on which the flight is lost, e.g. against a busy background. */
+        flightGap: IntRange = IntRange.EMPTY,
     ): Scenario {
         val random = Random(seed)
         val feet = doubleArrayOf(3.2, -0.3)
@@ -138,16 +152,22 @@ class ServeFlightTest {
         val frames = (0 until contactFrame + flightPoints.size).map { frame ->
             val blobs = mutableListOf<BallCandidate>()
             val sinceContact = frame - contactFrame
-            val ball: PixelPoint? = when {
+            val ball: DoubleArray? = when {
                 sinceContact in -2..lastBlindFrame -> null // behind the racket, then too blurred to pass as a ball
+                sinceContact in flightGap -> null
+                sinceContact < 0 && hideToss -> null
                 sinceContact < 0 -> {
                     // The toss falling onto the contact point from a 3.4 m apex.
                     val s = -sinceContact / fps
-                    camera.project(contact[0], contact[1], contact[2] + 0.5 * 9.81 * s * s).takeIf { s < 0.4 }
+                    doubleArrayOf(contact[0], contact[1], contact[2] + 0.5 * 9.81 * s * s).takeIf { s < 0.4 }
                 }
-                else -> flightPoints[sinceContact].let { camera.project(it[0], it[1], it[2]) }
+                else -> flightPoints[sinceContact]
             }
-            if (ball != null && ball.x in 0f..1919f && ball.y in 0f..1079f) blobs += BallCandidate(ball.x.toDouble(), ball.y.toDouble(), 20)
+            if (ball != null) {
+                val at = camera.project(ball[0], ball[1], ball[2])
+                val size = camera.ballPixels(ball[0], ball[1], ball[2]).let { if (sinceContact < 0) (it * tossSizeFactor).toInt() else it }
+                if (at.x in 0f..1919f && at.y in 0f..1079f) blobs += BallCandidate(at.x.toDouble(), at.y.toDouble(), size)
+            }
             repeat(25) { blobs += BallCandidate(random.nextDouble(0.0, 1920.0), random.nextDouble(550.0, 1080.0), 30) }
             blobs += BallCandidate(1810.0, 550.0, 25)
             FrameBlobs((frame * 1000 / fps).toLong(), blobs)
@@ -236,6 +256,81 @@ class ServeFlightTest {
         assertEquals(describe(s, outcome), launch * 3.6, outcome.kmh, launch * 3.6 * 0.03)
     }
 
+    /**
+     * The 2026-09-23 night recordings, filmed from a few metres behind the
+     * server: the ball stayed too large for [MotionBlobs] for ~0.3 s after
+     * contact, the track started mid-flight, and the flight's own earlier
+     * frames — falling down the screen — were taken for the toss. Contact came
+     * out 260-600 ms late and a 92 km/h serve read 126. Better to measure
+     * nothing than that.
+     */
+    @Test
+    fun `the flight's own earlier frames are not taken for the toss`() {
+        val launch = 30.0 // 108 km/h
+        val s = scenario(
+            aimed(launch, targetX = 5.0, targetY = 16.0, downDegrees = -2.0),
+            seed = 2,
+            hideToss = true,
+            flightGap = 12..16,
+        )
+
+        val outcome = ServeFlight.analyze(s.frames, s.proposal, homography, CourtFormat.SINGLES, fps)
+
+        if (outcome is ServeOutcome.Measured) {
+            assertTrue("contact ${outcome.contactMs} vs ${s.contactMs}: ${describe(s, outcome)}", abs(outcome.contactMs - s.contactMs) <= 40)
+        }
+    }
+
+    /**
+     * A slow, high second serve on 2026-09-23 was in the air 1.0 s and was
+     * thrown out by a 1.0 s limit; the tracker then measured something else
+     * at 254 km/h.
+     */
+    @Test
+    fun `a slow serve in the air over a second is measured`() {
+        val launch = 19.0 // 68 km/h
+        val s = scenario(aimed(launch, targetX = 5.0, targetY = 17.0, downDegrees = -12.0), seed = 6)
+        val flightSeconds = (s.bounceMs!! - s.contactMs) / 1000.0
+        assertTrue("simulated flight $flightSeconds s should be over 1 s", flightSeconds > 1.0)
+
+        val outcome = ServeFlight.analyze(s.frames, s.proposal, homography, CourtFormat.SINGLES, fps)
+
+        assertTrue("expected a measured serve, got ${describe(s, outcome)}", outcome is ServeOutcome.Measured)
+        assertEquals(describe(s, outcome), launch * 3.6, (outcome as ServeOutcome.Measured).kmh, launch * 3.6 * 0.06)
+    }
+
+    /**
+     * A lob falling on the far court is a falling blob above the near
+     * player's head, but a few pixels across: on 2026-09-23 it passed as the
+     * toss and a forehand was reported as a 186 km/h serve.
+     */
+    @Test
+    fun `a falling ball too small to be at the server is not the toss`() {
+        val s = scenario(aimed(45.0, targetX = 5.5, targetY = 17.0, downDegrees = 5.0), tossSizeFactor = 0.1)
+
+        val outcome = ServeFlight.analyze(s.frames, s.proposal, homography, CourtFormat.SINGLES, fps)
+
+        assertTrue("expected no serve without a ball-sized toss, got $outcome", outcome !is ServeOutcome.Measured)
+    }
+
+    @Test
+    fun `blob limits grow with the ball's size near the server and never shrink below the defaults`() {
+        val s = scenario(aimed(45.0, targetX = 5.5, targetY = 17.0, downDegrees = 5.0))
+        // This camera sees the ball ~16 px across at the server: ~200 px of area.
+        val near = ServeFlight.blobLimits(s.proposal.server, homography)
+        assertTrue("$near", near.maxPixels > MotionBlobs.DEFAULT_MAX_PIXELS && near.maxDimension > MotionBlobs.DEFAULT_MAX_DIMENSION)
+
+        // The same view from four times as far: a ~4 px ball.
+        fun shrink(p: PixelPoint) = PixelPoint(960 + (p.x - 960) / 4, 540 + (p.y - 540) / 4)
+        val far = Homography.fromCalibration(
+            CalibrationPoints(CourtFormat.SINGLES, 1920, 1080, shrink(nearLeft), shrink(nearRight), shrink(farLeft), shrink(farRight)),
+        )!!
+        val server = s.proposal.server.let {
+            it.copy(leftAnkle = shrink(it.leftAnkle), rightAnkle = shrink(it.rightAnkle))
+        }
+        assertEquals(BallBlobLimits(MotionBlobs.DEFAULT_MAX_PIXELS, MotionBlobs.DEFAULT_MAX_DIMENSION), ServeFlight.blobLimits(server, far))
+    }
+
     @Test
     fun `a slower second serve is measured too`() {
         val launch = 30.0 // 108 km/h
@@ -285,7 +380,7 @@ class ServeFlightTest {
     @Test
     fun `noise alone is not a serve`() {
         val s = scenario(aimed(45.0, 5.5, 17.0, 5.0), seed = 4)
-        val noiseOnly = s.frames.map { frame -> FrameBlobs(frame.timeMs, frame.blobs.filter { it.pixelCount != 20 }) }
+        val noiseOnly = s.frames.map { frame -> FrameBlobs(frame.timeMs, frame.blobs.filter { it.pixelCount == 30 || it.pixelCount == 25 }) }
 
         val outcome = ServeFlight.analyze(noiseOnly, s.proposal, homography, CourtFormat.SINGLES, fps)
 

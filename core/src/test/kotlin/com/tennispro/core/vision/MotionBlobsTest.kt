@@ -56,6 +56,35 @@ class MotionBlobsTest {
         assertTrue(found.isEmpty())
     }
 
+    /**
+     * The 2026-09-23 night footage: the phone jittered by about a pixel, and
+     * every edge in the picture showed up as motion. A shifted edge is not a
+     * moving ball; a ball moving past the same edge still is.
+     */
+    @Test
+    fun `an edge that shifts by a pixel with camera shake is not motion, a ball beside it is`() {
+        val width = 80
+        val height = 60
+        // A short, soft vertical edge (part of a pole) that jumps right by one pixel in the middle frame.
+        fun edgeAt(offset: Int) = IntArray(width * height) { i ->
+            val x = i % width
+            val y = i / width
+            when {
+                y !in 20..31 || x < 30 + offset -> 50
+                x < 34 + offset -> 50 + (x - 30 - offset) * 40
+                else -> 210
+            }
+        }
+        fun with(pixels: IntArray, vararg spots: Pair<Int, Int>) = GrayscaleFrame(width, height, pixels.copyOf().also { p ->
+            for ((cx, cy) in spots) for (y in cy - 2..cy + 2) for (x in cx - 2..cx + 2) p[y * width + x] = 250
+        })
+
+        val found = MotionBlobs.find(with(edgeAt(0), 10 to 10), with(edgeAt(1), 10 to 30), with(edgeAt(0), 10 to 50))
+
+        assertEquals("only the ball: $found", 1, found.size)
+        assertEquals(10.0, found[0].x, 0.01)
+    }
+
     @Test
     fun `a diagonal streak stays one blob under 8-connectivity`() {
         val width = 80

@@ -7,15 +7,21 @@ import com.tennispro.core.court.Homography
 import com.tennispro.core.court.PixelPoint
 import com.tennispro.core.court.ServiceCall
 import com.tennispro.core.court.ServiceLineCall
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.hypot
+import kotlin.math.ln
 import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 import kotlin.math.sqrt
 
 /** The ball candidates [MotionBlobs] found in one frame. */
 data class FrameBlobs(val timeMs: Long, val blobs: List<BallCandidate>)
+
+/** [MotionBlobs]' size limits for one serve: the largest blob that can still be the ball. */
+data class BallBlobLimits(val maxPixels: Int, val maxDimension: Int)
 
 /** What the ball did after a proposed serve. */
 sealed interface ServeOutcome {
@@ -62,9 +68,12 @@ sealed interface ServeOutcome {
  * head just before the flight, and a flight that starts above the head. On the
  * 2026-09-08 rally recording, pose alone proposed groundstrokes and an overhead.
  *
- * **Contact** is midway between the last blob above the head (the falling
- * toss, or the racket meeting it) and the flight's first point: the racket
- * hides the ball in between.
+ * **Contact** is where the falling toss and the flight meet (see
+ * [meetingTime]): the racket hides the ball in between. Which blob is the
+ * toss, and which chain can follow it, is checked from several sides — see
+ * [contactTime] — because on footage from close behind the server the flight
+ * itself, junk along a floodlit net, and a lob on the far court all passed
+ * a looser test.
  *
  * **The bounce** is where the ground's impulse kinks the on-screen track. It
  * is searched for from the track's lowest on-screen point onward, not taken as
@@ -107,10 +116,17 @@ object ServeFlight {
         val feet = homography.mapToCourt(proposal.server.feet)
         val contactPosition = doubleArrayOf(feet.xMeters.toDouble(), feet.yMeters + CONTACT_AHEAD_OF_FEET_M, CONTACT_HEIGHT_M)
         val body = bodyMask(proposal.server, frameHeight = Int.MAX_VALUE)
-        val context = Context(frames, blobs, proposal, homography, format, contactPosition, fps, headY, body)
+        val ballPixels = ballDiameterPx(proposal.server, homography)
+        val minTossPixels = TOSS_MIN_AREA_FRACTION * PI / 4 * ballPixels * ballPixels
+        val tossBelowY = headY - TOSS_MIN_ABOVE_NOSE_M * ballPixels / BALL_DIAMETER_M
+        val context = Context(frames, blobs, proposal, homography, format, contactPosition, fps, headY, body, ballPixels, minTossPixels, tossBelowY)
 
         // Blobs already part of a full-length chain don't seed another: the same
-        // flight would otherwise be rebuilt from every one of its points.
+        // flight would otherwise be rebuilt from every one of its points. Only a
+        // chain that came out as a serve or a net fault, though: on 2026-09-23
+        // tracks that began on junk or the racket and then joined the real flight
+        // were rejected, or judged implausible, and marking their points kept the
+        // flight from ever being tried on its own.
         val used = HashSet<Long>()
         var best: Evaluation? = null
         for (seed in 0 until frames.size - 1) {
@@ -123,15 +139,54 @@ object ServeFlight {
                     val step = hypot(b.x - a.x, b.y - a.y)
                     if (step < MIN_SEED_STEP_PX || step > MAX_SEED_STEP_PX) return@forEachIndexed
                     val chain = extend(grids, seed, Link(seed, ai, a.x, a.y), Link(seed + 1, bi, b.x, b.y))
-                    if (chain.size >= MIN_CHAIN) chain.forEach { used += key(it.frame, it.index) }
                     if (!movesLikeABall(chain)) return@forEachIndexed
                     val evaluation = evaluate(chain, context) ?: return@forEachIndexed
+                    if (evaluation.rank > RANK_IMPLAUSIBLE) chain.forEach { used += key(it.frame, it.index) }
                     if (best == null || evaluation.betterThan(best!!)) best = evaluation
                 }
             }
         }
 
         return best?.outcome ?: ServeOutcome.NoFlight("No ball flight found after the swing")
+    }
+
+    /**
+     * How large the ball can look near the server, for [MotionBlobs].
+     *
+     * The fixed 150 px / 30 px limits were set on footage from a fence mount,
+     * where the ball is a few pixels across. On 2026-09-23 the phone stood a
+     * few metres behind the server: the toss measured 360-430 px and the ball
+     * just off the strings 400-600 px and up to 45 px long, so neither passed
+     * until ~0.3 s into the flight. The tracker then started mid-flight and
+     * took the ball's own earlier path for the toss (see [contactTime]):
+     * contact 260-600 ms late, a 92 km/h serve read as 126 and a slow 1 s
+     * serve as 254.
+     *
+     * The ball's size near the server follows from the calibration: 6.7 cm
+     * times the court's scale where the server stands. The limits allow for
+     * motion blur on top, and never go below the defaults.
+     */
+    fun blobLimits(server: PoseKeypoints, homography: Homography): BallBlobLimits {
+        val d = ballDiameterPx(server, homography)
+        return BallBlobLimits(
+            maxPixels = max(MotionBlobs.DEFAULT_MAX_PIXELS, (BLOB_AREA_PER_DIAMETER_SQ * d * d).roundToInt()),
+            maxDimension = max(MotionBlobs.DEFAULT_MAX_DIMENSION, (BLOB_LENGTH_PER_DIAMETER * d).roundToInt()),
+        )
+    }
+
+    /**
+     * The ball's diameter in pixels where the server stands: the court's
+     * pixels-per-metre across the court at their feet. Contact is higher and a
+     * little further away, so this errs large, which is the safe side for a
+     * size limit. Bounded so a wild pose can't make it absurd.
+     */
+    internal fun ballDiameterPx(server: PoseKeypoints, homography: Homography): Double {
+        val feet = homography.mapToCourt(server.feet)
+        val left = homography.mapToPixel(CourtPoint(feet.xMeters - 0.5f, feet.yMeters))
+        val right = homography.mapToPixel(CourtPoint(feet.xMeters + 0.5f, feet.yMeters))
+        val perMeter = hypot((right.x - left.x).toDouble(), (right.y - left.y).toDouble())
+        val d = BALL_DIAMETER_M * perMeter
+        return if (d.isFinite()) d.coerceIn(MIN_BALL_DIAMETER_PX, MAX_BALL_DIAMETER_PX) else MIN_BALL_DIAMETER_PX
     }
 
     /**
@@ -178,10 +233,16 @@ object ServeFlight {
             blobs.forEachIndexed { i, b -> cells.getOrPut(cell(b.x, b.y)) { mutableListOf() } += i }
         }
 
-        /** Index of the candidate nearest to either point, within [radius] of it, or -1. */
-        fun nearest(x1: Double, y1: Double, x2: Double, y2: Double, radius: Double): Int {
+        /**
+         * Index of the candidate within [radius] of either point that best
+         * continues a ball last seen at [lastPixels] — nearest, with a change of
+         * size counted against it — or -1. Candidates under a fifth of that size
+         * are specks, not the ball.
+         */
+        fun nearest(x1: Double, y1: Double, x2: Double, y2: Double, radius: Double, lastPixels: Int): Int {
+            val minPixels = (MIN_SIZE_KEPT * lastPixels).toInt()
             var best = -1
-            var bestDistance = radius
+            var bestCost = Double.MAX_VALUE
             for ((x, y) in listOf(x1 to y1, x2 to y2)) {
                 val cx0 = ((x - radius) / CELL_PX).toInt()
                 val cx1 = ((x + radius) / CELL_PX).toInt()
@@ -190,9 +251,12 @@ object ServeFlight {
                 for (cx in cx0..cx1) for (cy in cy0..cy1) {
                     val bucket = cells[cx.toLong() shl 32 or (cy.toLong() and 0xffffffffL)] ?: continue
                     for (i in bucket) {
+                        if (blobs[i].pixelCount < minPixels) continue
                         val d = hypot(blobs[i].x - x, blobs[i].y - y)
-                        if (d <= bestDistance) {
-                            bestDistance = d
+                        if (d > radius) continue
+                        val cost = d + SIZE_CHANGE_COST_PX * abs(ln(blobs[i].pixelCount.toDouble() / lastPixels))
+                        if (cost < bestCost) {
+                            bestCost = cost
                             best = i
                         }
                     }
@@ -235,10 +299,18 @@ object ServeFlight {
             // its bounce. While the ball is descending, offer the reflected continuation too.
             val bouncedY = if (vy > 0) last.y - BOUNCE_RESTITUTION * vy * steps else py
             val bouncedX = last.x + vx * steps
-            val gate = GATE_BASE_PX + GATE_PER_STEP_PX * steps
+            // The ball shrinks gradually as it flies away; a speck or fragment beside
+            // it is not the ball. On 2026-09-23, against a floodlit fence, a 3 px
+            // speck and then a 33 px fragment of the split ball, each nearer the
+            // prediction than the ~130 px ball, took the track off it mid-flight.
+            val lastPixels = grids[last.frame].blobs[last.index].pixelCount
+            // Wider for a ball close to the camera: its blob's centre wanders by a
+            // good part of its width as the smear breaks up and joins, and the fixed
+            // 6 px gate, set on distant balls, lost a 16 px ball 0.3 s into its flight.
+            val gate = GATE_BASE_PX + GATE_PER_STEP_PX * steps + GATE_PER_BALL_WIDTH * sqrt(4 / PI * lastPixels)
 
             val grid = grids[frame]
-            val next = grid.nearest(px, py, bouncedX, bouncedY, gate)
+            val next = grid.nearest(px, py, bouncedX, bouncedY, gate, lastPixels)
             if (next >= 0) {
                 val blob = grid.blobs[next]
                 chain += Link(frame, next, blob.x, blob.y)
@@ -261,11 +333,22 @@ object ServeFlight {
         return hypot(head.last().x - head.first().x, head.last().y - head.first().y) / frames >= MIN_HEAD_SPEED_PX
     }
 
-    /** See the class doc: from the on-screen low point onward, the sharpest kink toward rising. */
-    private fun bounceIndex(chain: List<Link>): Int? {
-        val low = (1 until chain.size - 2).firstOrNull { j ->
-            val y = chain[j].y
-            y >= chain[j - 1].y && y > chain[j + 1].y && chain[j + 1].y >= chain[j + 2].y
+    /**
+     * See the class doc: from the on-screen low point onward, the sharpest kink
+     * toward rising. Only from [from] on — no serve lands straight off the
+     * racket, and on 2026-09-23 a streak just off the strings, then a dip on
+     * screen, was taken for the bounce and a serve called a net fault.
+     *
+     * The low point must be followed by the ball climbing for
+     * [BOUNCE_RISE_POINTS] points: a bounce sends it up for many frames. On
+     * 2026-09-23 a serve clipped the net tape and dropped; the track lost it
+     * there and picked up two stray points higher up, and that kink was read
+     * as a bounce near the far service line — "180 km/h OUT" for a net cord.
+     */
+    private fun bounceIndex(chain: List<Link>, from: Int): Int? {
+        val low = (max(1, from) until chain.size - BOUNCE_RISE_POINTS).firstOrNull { j ->
+            chain[j].y >= chain[j - 1].y && chain[j + 1].y < chain[j].y &&
+                (2..BOUNCE_RISE_POINTS).all { k -> chain[j + k].y <= chain[j + k - 1].y }
         } ?: return null
 
         var best = low
@@ -294,6 +377,16 @@ object ServeFlight {
         val fps: Double,
         val headY: Double,
         val body: List<PixelRect>,
+        /** The ball's diameter near the server. */
+        val ballPixels: Double,
+        /** Smallest blob that can be the tossed ball, this close to the camera. */
+        val minTossPixels: Double,
+        /**
+         * A toss is last seen above this line. "Above the head" alone let junk
+         * in a floodlit band just over a close server's head pass as the toss
+         * on 2026-09-23.
+         */
+        val tossBelowY: Double,
     )
 
     private class Evaluation(val rank: Int, val length: Int, val outcome: ServeOutcome) {
@@ -304,10 +397,21 @@ object ServeFlight {
         if (chain.size < MIN_CHAIN) return null
         // A serve is struck above the head; a groundstroke's flight starts lower.
         if (chain.first().y >= c.headY) return null
+        // Starting by falling straight down, it starts on the toss: on 2026-09-23 such
+        // a chain ran on into the flight and put contact 100 ms early, reading a
+        // 113 km/h serve as 98. The chain that starts at contact is tried on its own.
+        if (fallsLikeToss(chain[0].x, chain[0].y, chain[1].x, chain[1].y, (chain[1].frame - chain[0].frame).toDouble())) return null
+        // Just off the racket the ball is still about as close to the camera as the
+        // toss was, so as large. Junk along a floodlit net, and fragments of a
+        // swinging racket, chained into "flights" on 2026-09-23 without ever
+        // being ball-sized.
+        if (chain.take(BALL_SIZED_HEAD_POINTS).any { c.blobs[it.frame][it.index].pixelCount < c.minTossPixels }) return null
         val contactMs = contactTime(chain, c) ?: return null
         // Racket-up to contact was 0.2-0.6 s on every serve checked by eye.
         if (contactMs - c.proposal.racketUpMs !in 0..MAX_RACKET_UP_TO_CONTACT_MS) return null
-        val bounceAt = bounceIndex(chain) ?: return null
+        val landable = chain.indexOfFirst { c.frames[it.frame].timeMs - contactMs >= MIN_BOUNCE_AFTER_CONTACT_MS }
+        if (landable < 0) return null
+        val bounceAt = bounceIndex(chain, from = landable) ?: return null
 
         val bouncePixel = refineBounce(chain, bounceAt, c.frames)
         // A bounce the server's body hides can't be seen, so it can't be measured
@@ -445,20 +549,27 @@ object ServeFlight {
         ServeOutcome.NoFlight("Implausible flight (${chain.size}-point track): $why")
 
     /**
-     * Midway between the toss's last visible frame and the flight's first
-     * point. Null when there is no toss: no toss, no serve.
+     * When the racket met the toss that [chain] flew off, or null when there
+     * is no such toss: no toss, no serve.
      *
-     * The toss is a blob above the head at the end of a short track falling
-     * nearly straight down — not merely *a* blob above the head: stray motion
+     * The toss is a blob well above the head at the end of a short track
+     * falling straight down — not merely *a* blob above the head: stray motion
      * there (tree leaves on real footage, random clutter in the tests) read as
-     * the toss and made contact ~40 ms late, a 162 km/h serve reading 180.
+     * the toss and made contact ~40 ms late, a 162 km/h serve reading 180. And
+     * it must belong to this chain: not the chain's own earlier path, not
+     * still falling when the chain starts, and ending where the chain begins.
+     * Contact is where the two meet ([meetingTime]), else midway between them.
      */
     private fun contactTime(chain: List<Link>, c: Context): Long? {
         val first = chain.first()
         for (frame in first.frame - 1 downTo max(TOSS_TRACK_FRAMES - 1, first.frame - CONTACT_LOOKBACK_FRAMES)) {
             for (blob in c.blobs[frame]) {
-                if (blob.y >= c.headY || abs(blob.x - first.x) >= CONTACT_NEAR_X_PX) continue
+                if (blob.y >= c.tossBelowY || abs(blob.x - first.x) >= CONTACT_NEAR_X_PX) continue
                 val toss = fallingTrackEndingAt(blob, frame, c) ?: continue
+                if (movesWithFlight(toss, chain)) continue
+                // Still falling when this "flight" starts: the ball hasn't been hit yet.
+                if (keepsFalling(blob, frame, first, c)) return null
+                if (!startsWhereTossEnds(blob, frame, chain, c)) continue
                 val midpoint = (c.frames[frame].timeMs + c.frames[first.frame].timeMs) / 2
                 return meetingTime(toss, chain, c) ?: midpoint
             }
@@ -562,18 +673,87 @@ object ServeFlight {
      * head: stray motion there (tree leaves on real footage, random clutter in
      * the tests) read as the toss and made contact ~40 ms late, a 162 km/h
      * serve reading 180.
+     *
+     * *Nearly* vertical is relative to the fall, not a fixed 20 px: on
+     * 2026-09-23 the ball's own flight, descending the screen at 5-8 px a
+     * frame sideways and down, passed the fixed limit and was taken for the
+     * toss. A toss drifts a pixel or two. And ball-sized for this distance
+     * from the camera: a lob falling on the far court, a few pixels across,
+     * passed as the near server's toss and turned a forehand into a
+     * "186 km/h serve".
      */
     private fun fallingTrackEndingAt(blob: BallCandidate, frame: Int, c: Context): List<Link>? {
+        if (blob.pixelCount < c.minTossPixels) return null
         val track = mutableListOf(Link(frame, 0, blob.x, blob.y))
         var current = blob
         for (back in 1 until TOSS_TRACK_FRAMES) {
             current = c.blobs[frame - back].firstOrNull { previous ->
                 val dy = current.y - previous.y
-                abs(current.x - previous.x) <= TOSS_MAX_DRIFT_PX && dy in TOSS_MIN_FALL_PX..TOSS_MAX_FALL_PX
+                dy in TOSS_MIN_FALL_PX..TOSS_MAX_FALL_PX &&
+                    abs(current.x - previous.x) <= max(TOSS_MIN_DRIFT_PX, TOSS_DRIFT_PER_FALL * dy) &&
+                    previous.pixelCount >= c.minTossPixels
             } ?: return null
             track += Link(frame - back, 0, current.x, current.y)
         }
         return track.reversed()
+    }
+
+    /** A step from (x0, y0) to (x1, y1) over [frames] that falls nearly straight down, as a toss does. */
+    private fun fallsLikeToss(x0: Double, y0: Double, x1: Double, y1: Double, frames: Double): Boolean {
+        val dy = (y1 - y0) / frames
+        return dy in TOSS_MIN_FALL_PX..TOSS_MAX_FALL_PX && abs(x1 - x0) / frames <= max(TOSS_MIN_DRIFT_PX, TOSS_DRIFT_PER_FALL * dy)
+    }
+
+    /**
+     * Whether the toss ending at [blob] in [frame] carries on falling through
+     * the frame the flight starts in, beside it: then it was never hit before
+     * that frame, and nothing that starts there is the serve. The flight's own
+     * first point doesn't count — just off the strings it can sit right below
+     * the toss. On the 2026-09-23 night recording, junk tracks along the
+     * floodlit net started 0.1 s before contact, borrowed the toss above them
+     * — still in the air — and came out as a 190 km/h serve.
+     */
+    private fun keepsFalling(blob: BallCandidate, frame: Int, flightStart: Link, c: Context): Boolean {
+        var current = blob
+        for (next in frame + 1..flightStart.frame) {
+            current = c.blobs[next].filterIndexed { i, _ -> next != flightStart.frame || i != flightStart.index }.firstOrNull { following ->
+                val dy = following.y - current.y
+                dy in TOSS_MIN_FALL_PX..TOSS_MAX_FALL_PX &&
+                    abs(following.x - current.x) <= max(TOSS_MIN_DRIFT_PX, TOSS_DRIFT_PER_FALL * dy) &&
+                    following.pixelCount >= c.minTossPixels
+            } ?: return false
+        }
+        return true
+    }
+
+    /**
+     * Whether the flight's first point is where the ball could be after
+     * leaving the racket at the toss's last point, [frames] later: the racket
+     * meets the toss, so the flight starts there. Allows the flight's own
+     * speed for the frames between, and a few ball widths for the racket's
+     * reach. Junk along a floodlit net on 2026-09-23 was taking a toss 400 px
+     * away as its own.
+     */
+    private fun startsWhereTossEnds(tossEnd: BallCandidate, frame: Int, chain: List<Link>, c: Context): Boolean {
+        val first = chain[0]
+        val step = hypot(chain[1].x - first.x, chain[1].y - first.y) / (chain[1].frame - first.frame)
+        val frames = first.frame - frame
+        val reach = frames * max(step, MIN_FLIGHT_STEP_PX) * FLIGHT_STEP_SLACK + CONTACT_REACH_BALLS * c.ballPixels
+        return hypot(first.x - tossEnd.x, first.y - tossEnd.y) <= reach
+    }
+
+    /**
+     * Whether [toss] is the flight's own earlier path rather than a toss: a
+     * blob moving with the same velocity as the flight's first step. A real
+     * toss falls onto the racket and the ball leaves in another direction.
+     */
+    private fun movesWithFlight(toss: List<Link>, chain: List<Link>): Boolean {
+        val tossVx = (toss.last().x - toss[toss.size - 2].x) / (toss.last().frame - toss[toss.size - 2].frame)
+        val tossVy = (toss.last().y - toss[toss.size - 2].y) / (toss.last().frame - toss[toss.size - 2].frame)
+        val flightVx = (chain[1].x - chain[0].x) / (chain[1].frame - chain[0].frame)
+        val flightVy = (chain[1].y - chain[0].y) / (chain[1].frame - chain[0].frame)
+        val difference = hypot(tossVx - flightVx, tossVy - flightVy)
+        return difference <= SAME_BALL_VELOCITY_PX + SAME_BALL_VELOCITY_FRACTION * hypot(flightVx, flightVy)
     }
 
     /**
@@ -623,13 +803,26 @@ object ServeFlight {
     private const val MIN_NET_FAULT_CHAIN = 20
     private const val HEAD_POINTS = 15
     private const val MIN_HEAD_SPEED_PX = 3.0
-    private const val MAX_MISSED_FRAMES = 3
+    /**
+     * A serve hit straight away from the camera hangs at the top of its
+     * on-screen arc, moving a pixel or two a frame, and frame differencing
+     * loses it for ~5 frames (2026-09-23).
+     */
+    private const val MAX_MISSED_FRAMES = 6
     private const val GATE_BASE_PX = 6.0
     private const val GATE_PER_STEP_PX = 4.0
-    private const val MIN_SEED_STEP_PX = 8.0
+    private const val GATE_PER_BALL_WIDTH = 0.5
+    /** A serve hit straight away from the camera moves only ~8 px a frame on screen just off the racket. */
+    private const val MIN_SEED_STEP_PX = 4.0
     private const val MAX_SEED_STEP_PX = 200.0
     private const val SEED_WINDOW_MS = 900L
     private const val SEED_MARGIN_X = 450.0
+
+    /** Of the previous point's size: the least the next point on a track can be. */
+    private const val MIN_SIZE_KEPT = 0.2
+
+    /** Pixels of distance a doubling or halving of size counts as, when picking the next point. */
+    private const val SIZE_CHANGE_COST_PX = 8.0
 
     /** On-screen, roughly: a real bounce keeps ~70% of vertical speed, foreshortened by the far-court view. */
     private const val BOUNCE_RESTITUTION = 0.6
@@ -639,6 +832,9 @@ object ServeFlight {
     private const val BOUNCE_SEARCH_BEFORE = 2
     private const val BOUNCE_SEARCH_AFTER = 10
     private const val BOUNCE_FIT_POINTS = 3
+
+    /** Points after the on-screen low point that must keep climbing for it to be a bounce. */
+    private const val BOUNCE_RISE_POINTS = 4
 
     /**
      * The bounce's pixel uncertainty: ~1.5 px of blob centroid and ~2 px of
@@ -662,11 +858,49 @@ object ServeFlight {
     /** How close the two extrapolations must come before the meeting point is believed, in pixels. */
     private const val MEETING_MAX_GAP_PX = 120.0
 
-    /** A toss's last frames before contact, on 60 fps footage: 3 frames, nearly vertical, falling 1-40 px each. */
+    /**
+     * A toss's last frames before contact, on 60 fps footage: 3 frames, falling
+     * 1-40 px each, drifting sideways at most a third of the fall (or a few
+     * pixels of centroid jitter near the apex).
+     */
     private const val TOSS_TRACK_FRAMES = 3
-    private const val TOSS_MAX_DRIFT_PX = 20.0
+    private const val TOSS_MIN_DRIFT_PX = 4.0
+    private const val TOSS_DRIFT_PER_FALL = 0.35
     private const val TOSS_MIN_FALL_PX = 1.0
     private const val TOSS_MAX_FALL_PX = 40.0
+
+    /** Of a whole ball's area at the server's distance: the toss measured 1.2-1.5x on 2026-09-23, a far-court lob under 0.2x. */
+    private const val TOSS_MIN_AREA_FRACTION = 0.25
+
+    /** The flight may have slowed from, or first been seen slower than, its speed off the racket. */
+    private const val MIN_FLIGHT_STEP_PX = 20.0
+    private const val FLIGHT_STEP_SLACK = 1.5
+
+    /** Ball widths between the toss's last sighting and where the racket sends it off. */
+    private const val CONTACT_REACH_BALLS = 5.0
+
+    /** Velocities, px a frame, closer than this are one ball moving on, not a toss and a flight. */
+    private const val SAME_BALL_VELOCITY_PX = 4.0
+    private const val SAME_BALL_VELOCITY_FRACTION = 0.25
+
+    /** Contact is about a metre above the nose; a toss last seen lower than half that is something else. */
+    private const val TOSS_MIN_ABOVE_NOSE_M = 0.5
+
+    /** The flight's first points, which must be the size of the toss. */
+    private const val BALL_SIZED_HEAD_POINTS = 3
+
+    private const val BALL_DIAMETER_M = 0.067
+    private const val MIN_BALL_DIAMETER_PX = 2.0
+    private const val MAX_BALL_DIAMETER_PX = 60.0
+
+    /**
+     * Blob limits per ball diameter. Just off the strings the ball is a streak:
+     * on 2026-09-23 one flying mostly away measured 600 px (1.6 d²) and 45 px
+     * long (2.3 d), but one crossing the view at 40-70 px a frame was longer
+     * than 2.6 d until 0.1 s into the flight, and the serve was lost.
+     */
+    private const val BLOB_AREA_PER_DIAMETER_SQ = 5.0
+    private const val BLOB_LENGTH_PER_DIAMETER = 5.0
 
     /** A serve that bounces further than this outside the sidelines isn't a serve track. */
     private const val SIDEWAYS_MARGIN_M = 1.0
@@ -677,7 +911,11 @@ object ServeFlight {
 
     private const val NET_MARGIN_M = 0.5
     private const val MIN_FLIGHT_S = 0.3
-    private const val MAX_FLIGHT_S = 1.0
+
+    /** Earliest a bounce is looked for, a little inside [MIN_FLIGHT_S] so a fast serve's bounce is still found and judged. */
+    private const val MIN_BOUNCE_AFTER_CONTACT_MS = 250L
+    /** A slow, high club second serve took 1.0 s on 2026-09-23 and was thrown out at the old 1.0 s limit. */
+    private const val MAX_FLIGHT_S = 1.4
     private const val MIN_KMH = 40.0
     private const val MAX_KMH = 260.0
 

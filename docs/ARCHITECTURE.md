@@ -361,19 +361,47 @@ The replacement was prototyped in Python/OpenCV against those recordings
      a server moves off straight after, and measuring stillness over the whole
      window lost a real serve.
 3. **The ball flight confirms.** Every frame from 0.7 s before the racket
-   rises to 2 s after, full-resolution grayscale, through `MotionBlobs`: a
+   rises to 2.5 s after, full-resolution grayscale, through `MotionBlobs`: a
    pixel counts as moving only if it differs from *both* neighbouring frames,
    which leaves just the ball's current position, and the server's body (from
-   pose) is masked out. `ServeFlight` then chains candidates frame to frame
-   and judges every chain on the full measurement it would produce:
-   - **A serve needs a toss** — a short track falling nearly straight down
-     above the head just before the flight — and a flight that starts above
-     the head. Pose alone proposed groundstrokes and overheads on a rally
-     recording.
-   - **Contact** is midway between the toss's last visible frame and the
-     flight's first point; the racket hides the ball in between.
+   pose) is masked out. A blob must also hold a few pixels that changed more
+   than a one-pixel shift could explain (threshold plus the local gradient):
+   at night on 2026-09-23 the phone jittered by about a pixel every ~0.1 s,
+   every edge in the picture registered as motion — 1,300-1,600 blobs a frame
+   — and the tracker lost the ball among them; the rule cut that to ~30 and
+   kept the ball in every frame. What survives is then joined where bounding
+   boxes touch, since a fast ball's smear breaks into pieces. How large a blob can still be the ball is set per
+   serve from the calibration — 6.7 cm times the court's scale at the
+   server's feet, with room for blur — because a camera a few metres behind
+   the server sees a ball ten times the area a fence mount does (see "Camera
+   close to the server" below). `ServeFlight` then chains candidates frame to
+   frame, each step taking the nearest candidate with a change of size
+   counted against it, within a window that widens with the ball's size on
+   screen, bridging up to six frames where the ball is lost (a serve hit
+   straight away from the camera hangs at the top of its on-screen arc and
+   vanishes from frame differencing for ~5), and judges every chain on the
+   full measurement it would produce. A chain may start from a 4 px step,
+   since such a serve moves only ~8 px a frame just off the racket; and only
+   a chain judged a serve or net fault reserves its points — tracks that
+   began on the racket or junk and then joined the ball were otherwise
+   rejected and kept the ball from being tried on its own:
+   - **A serve needs a toss** — a short track falling straight down (sideways
+     drift at most a third of the fall), at least half a metre above the
+     nose, ball-sized for the server's distance — and a flight that starts
+     above the head, ball-sized, where the toss ended, after the toss stopped
+     falling, and not moving on with the toss's own velocity. Pose alone
+     proposed groundstrokes and overheads on a rally recording; each of the
+     other conditions stopped a wrong "serve" on 2026-09-23.
+   - **Contact** is where the falling toss and the rising flight, each
+     extrapolated at constant on-screen acceleration, meet; the racket hides
+     the ball in between, and the flight is often first seen several frames
+     late.
    - **The bounce** is the sharpest kink in on-screen vertical motion from the
-     track's lowest on-screen point onward. Not the low point itself: seen
+     track's lowest on-screen point onward — searched from 0.25 s after
+     contact, and only where the ball is then seen climbing for four points.
+     A serve that clipped the net tape and dropped, with two stray points
+     after it, was otherwise read as a bounce past the service line and
+     reported as 180 km/h OUT; now it is a net fault. Not the low point itself: seen
      from behind, a ball flying away climbs the screen through perspective
      faster than it falls, so its on-screen low point comes before it lands
      (a simulated 162 km/h serve read 183). Not the sharpest kink anywhere:
@@ -412,6 +440,20 @@ The replacement was prototyped in Python/OpenCV against those recordings
   detections in the 10-minute rally recording (most likely overheads, where a
   falling ball above the head looks like a toss). There is no radar reference
   yet: the speeds are plausible, not verified.
+- **Camera close to the server, 2026-09-23.** Seven recordings, most of them
+  at night with the phone a few metres behind the server, checked frame by
+  frame against 0.1.4. From a high mount at dusk it was right (120 km/h
+  against ~130, bounce within 0.3 m). From close behind it was badly wrong:
+  126 km/h for a ~92 km/h serve, 254 for a slow 1 s serve, 242 OUT for a
+  serve that went into the net, 186 for a forehand in a rally. The ball there
+  is 360-600 px, over the old fixed 150 px limit, so neither the toss nor the
+  first ~0.3 s of flight was a candidate; the track began mid-flight and
+  took the ball's own earlier path, falling down the screen, for the toss.
+  Floodlit junk along the net filled the gaps. Replaying the real frames
+  through the pipeline with hand-marked poses now gives 130, 91 and 83 km/h
+  for those three serves, contact within 10 ms and bounce within 20 ms of
+  the frame-by-frame reading, and no serve for the forehand or the net fault
+  — the net fault is missed, not mis-measured.
 - **On-device** (Galaxy S25 Ultra): the 57 s `18-10-14` recording scanned in
   85 s — ~70 s of pose, ~8 s per proposed serve — finding both serves at 147
   and 153 km/h, within 3% of the off-device run on the same footage (on-device

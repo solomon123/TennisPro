@@ -5,6 +5,7 @@ import android.util.Log
 import com.tennispro.core.court.CalibrationPoints
 import com.tennispro.core.court.CourtFormat
 import com.tennispro.core.court.Homography
+import com.tennispro.core.vision.BallBlobLimits
 import com.tennispro.core.vision.CourtLineDetector
 import com.tennispro.core.vision.FrameBlobs
 import com.tennispro.core.vision.GrayscaleFrame
@@ -128,15 +129,22 @@ class ServeScanner(
 
         val frames = ArrayList<FrameBlobs>()
         var court: Court? = null
+        var limits: BallBlobLimits? = null
         val window = ArrayDeque<Pair<Long, GrayscaleFrame>>(3)
         source.decodeRange(startMs, endMs) { timeMs, frame ->
             if (court == null) court = courtFrom(CourtLineDetector.detect(frame)?.toCalibration(format, width, height))
+            // Sized from the court this serve is measured against: how big the ball
+            // looks depends on how close the camera is to the server.
+            val ballLimits = limits ?: ServeFlight.blobLimits(proposal.server, (court ?: sessionCourt).homography).also { limits = it }
             window.addLast(timeMs to frame)
             if (window.size == 3) {
                 val (_, prev) = window[0]
                 val (currMs, curr) = window[1]
                 val (_, next) = window[2]
-                frames += FrameBlobs(currMs, MotionBlobs.find(prev, curr, next, exclude = body))
+                frames += FrameBlobs(
+                    currMs,
+                    MotionBlobs.find(prev, curr, next, maxPixels = ballLimits.maxPixels, maxDimension = ballLimits.maxDimension, exclude = body),
+                )
                 window.removeFirst()
             }
         }
@@ -176,8 +184,12 @@ class ServeScanner(
         const val SESSION_COURT_FRAME_MS = 1_000L
         const val COURT_FRAME_SPAN_MS = 100L
 
-        /** Decode window around racket-up: the toss before, the flight and bounce after. */
+        /**
+         * Decode window around racket-up: the toss before, the flight and bounce
+         * after — up to 0.8 s to contact, a flight of up to 1.4 s, and a few
+         * frames past the bounce to find it.
+         */
         const val WINDOW_BEFORE_MS = 700L
-        const val WINDOW_AFTER_MS = 2_000L
+        const val WINDOW_AFTER_MS = 2_500L
     }
 }
